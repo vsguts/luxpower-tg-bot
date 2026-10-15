@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from lxbot.monitor.detector import EventType
 from lxbot.schedule.model import Outage
-from lxbot.schedule.service import DIGESTS_KEY, SCHEDULE_KEY, ScheduleConfig, ScheduleService
+from lxbot.schedule.service import DIGESTS_KEY, HEALTH_KEY, SCHEDULE_KEY, ScheduleConfig, ScheduleService
 from lxbot.schedule.source import ScheduleSourceError
 from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local, make_document
 
@@ -422,3 +424,23 @@ async def test_restart_keeps_the_fetch_time_within_an_hour(db):
     second, _, _ = await make_service(db, ScheduleSourceError("down"))
     assert second.current(at(15, 0)) is not None
     assert second.current(at(15, 1)) is None
+
+
+async def test_a_broken_schedule_row_starts_without_a_schedule(db, caplog):
+    await db.save_state(SCHEDULE_KEY, {"group": GROUP, "days": "garbage"})
+    service, sink, _ = await make_service(db, DOC)
+    assert service.current(at(8, 0)) is None
+    assert "stored schedule" in caplog.text
+    await service.tick(at(9, 0))
+    assert types(sink) == [EventType.SCHEDULE_TODAY]
+
+
+@pytest.mark.parametrize(
+    ("key", "row"),
+    [(DIGESTS_KEY, {"today": "not a date"}), (HEALTH_KEY, {"failing_since": 7}), (HEALTH_KEY, [1, 2])],
+)
+async def test_a_broken_state_row_starts_that_part_empty(db, key, row):
+    await db.save_state(key, row)
+    service, sink, _ = await make_service(db, DOC)
+    await service.tick(at(9, 0))
+    assert types(sink) == [EventType.SCHEDULE_TODAY]

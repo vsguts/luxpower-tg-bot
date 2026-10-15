@@ -108,26 +108,41 @@ class ScheduleService:
             return None
         return schedule
 
+    # A broken row starts its part empty: the schedule is refetched within a tick, while a crash here
+    # would stop the whole bot on every start.
     async def load(self) -> None:
-        stored = await self._db.load_state(SCHEDULE_KEY)
-        if stored:
-            self._schedule = Schedule(
-                group=stored["group"],
-                days={d.day: d for d in map(DaySchedule.from_dict, stored["days"])},
-                dtek_updated=_optional_time(stored["dtek_updated"]),
-                source_ok=stored["source_ok"],
-                source_updated=_optional_time(stored["source_updated"]),
-            )
-            self._fetched_at = datetime.fromisoformat(stored["fetched_at"])
-            self._saved_schedule, self._saved_fetched_at = self._schedule_row(), self._fetched_at
-        digests = await self._db.load_state(DIGESTS_KEY)
-        if digests:
-            self._digests = _Digests.from_dict(digests)
-            self._saved_digests = self._digests.to_dict()
-        health = await self._db.load_state(HEALTH_KEY)
-        if health:
-            self._failing_since = _optional_time(health["failing_since"])
-            self._down_reported = health["down_reported"]
+        for key, restore in (
+            (SCHEDULE_KEY, self._restore_schedule),
+            (DIGESTS_KEY, self._restore_digests),
+            (HEALTH_KEY, self._restore_health),
+        ):
+            stored = await self._db.load_state(key)
+            if not stored:
+                continue
+            try:
+                restore(stored)
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning("ignoring the stored schedule state %r: %r", key, exc)
+
+    def _restore_schedule(self, stored: dict) -> None:
+        schedule = Schedule(
+            group=stored["group"],
+            days={d.day: d for d in map(DaySchedule.from_dict, stored["days"])},
+            dtek_updated=_optional_time(stored["dtek_updated"]),
+            source_ok=stored["source_ok"],
+            source_updated=_optional_time(stored["source_updated"]),
+        )
+        fetched_at = datetime.fromisoformat(stored["fetched_at"])
+        self._schedule, self._fetched_at = schedule, fetched_at
+        self._saved_schedule, self._saved_fetched_at = self._schedule_row(), fetched_at
+
+    def _restore_digests(self, stored: dict) -> None:
+        self._digests = _Digests.from_dict(stored)
+        self._saved_digests = self._digests.to_dict()
+
+    def _restore_health(self, stored: dict) -> None:
+        failing_since = _optional_time(stored["failing_since"])
+        self._failing_since, self._down_reported = failing_since, stored["down_reported"]
 
     async def run(self) -> None:
         while True:
