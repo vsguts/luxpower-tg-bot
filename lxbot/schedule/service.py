@@ -246,7 +246,12 @@ class ScheduleService:
         if self._down_reported or now - self._failing_since < SOURCE_DOWN_AFTER:
             return []
         self._down_reported = True
-        return [Event(EventType.SCHEDULE_SOURCE_DOWN, self._failing_since)]
+        return [Event(EventType.SCHEDULE_SOURCE_DOWN, self._stopped_since())]
+
+    # A stale source is noticed an hour after its last update; the admin wants the latter.
+    def _stopped_since(self) -> datetime:
+        updated = self._schedule.source_updated if self._schedule else None
+        return min(self._failing_since, updated) if updated else self._failing_since
 
     def _digest_due(self, now: datetime) -> bool:
         local = self._local(now)

@@ -389,3 +389,13 @@ async def test_an_older_copy_of_the_document_is_ignored(db):
     await tick_through(service, at(9, 0), at(11, 30))
     assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
     assert service.current(at(11, 30)).day(TODAY).outages == (Outage(at(15), at(19)),)
+
+
+async def test_source_down_names_the_time_the_data_stopped(db):
+    frozen = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 15, 6, tzinfo=UTC))
+    service, sink, _ = await make_service(db, frozen, None)
+    await tick_through(service, at(9, 0), at(11, 0), step=timedelta(minutes=1))
+    assert types(sink) == [EventType.SCHEDULE_TODAY]
+    await service.tick(at(11, 1))
+    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
+    assert sink.events[1].at == at(9, 0)
