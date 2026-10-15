@@ -175,12 +175,20 @@ class ScheduleService:
         self._parse_failed = False
         self._fetch_ok = True
         self._fetched_at = now
+        if fresh is not None and self._older_than_stored(fresh):
+            # CDN edges or a flipping scraper can serve the previous document again: treat it as a 304.
+            log.info("ignoring an older copy of the schedule (updated %s)", fresh.source_updated)
+            fresh = None
         events: list[Event] = []
         if fresh is not None:
             events = self._change_events(fresh, now)
             self._schedule = fresh
         await self._save()
         return events
+
+    def _older_than_stored(self, fresh: Schedule) -> bool:
+        stored = self._schedule.source_updated if self._schedule else None
+        return stored is not None and fresh.source_updated is not None and fresh.source_updated < stored
 
     def _change_events(self, fresh: Schedule, now: datetime) -> list[Event]:
         today = self._local(now).date()

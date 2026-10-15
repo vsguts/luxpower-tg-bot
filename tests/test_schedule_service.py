@@ -367,13 +367,25 @@ async def test_unhealthy_source_without_tomorrow_sends_the_evening_digest_once_i
 
 
 async def test_change_notice_from_an_unhealthy_source_carries_its_age(db):
-    stale_change = make_document(
-        {TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}, TOMORROW: TOMORROW_OFF},
-        last_updated=datetime(2026, 10, 15, 4, tzinfo=UTC),
+    healthy = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 15, 5, 45, tzinfo=UTC))
+    failing_change = make_document(
+        {TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}},
+        ok=False,
+        last_updated=datetime(2026, 10, 15, 6, 10, tzinfo=UTC),
     )
-    service, sink, _ = await make_service(db, DOC, stale_change)
+    service, sink, _ = await make_service(db, healthy, failing_change)
     await service.tick(at(9, 0))
     await service.tick(at(9, 15))
     assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
     assert sink.events[0].source_updated is None
-    assert sink.events[1].source_updated == at(7, 0)
+    assert sink.events[1].source_updated == at(9, 10)
+
+
+async def test_an_older_copy_of_the_document_is_ignored(db):
+    # CDN edges can serve the previous document after the new one; each flip must not read as a change.
+    older = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 16, 22, tzinfo=UTC))
+    newer = make_document({TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}}, last_updated=datetime(2026, 10, 16, 23, tzinfo=UTC))
+    service, sink, _ = await make_service(db, older, *[newer, older] * 5)
+    await tick_through(service, at(9, 0), at(11, 30))
+    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
+    assert service.current(at(11, 30)).day(TODAY).outages == (Outage(at(15), at(19)),)
