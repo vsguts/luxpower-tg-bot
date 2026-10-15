@@ -50,6 +50,12 @@ async def test_skips_heartbeats_cloud_replies_and_bad_frames(dongle, client):
     assert values[0] == 0x40
 
 
+async def test_skips_reply_with_a_different_register_count(dongle, client):
+    dongle.before_reply = make_read_response(0, [9] * 80)
+    values = await client.read_input(0, 40)
+    assert values[0] == 0x40
+
+
 async def test_drains_stale_data_queued_before_the_request(dongle, client):
     dongle.on_connect = make_read_response(0, [7] * 40)
     values = await client.read_input(0, 40)
@@ -77,6 +83,9 @@ async def test_invalid_snapshot_is_a_dongle_error(dongle, client):
     dongle.registers.clear()
     with pytest.raises(DongleError):
         await client.read_snapshot(BASE)
+    dongle.registers.update(SNA_REGISTERS)
+    assert (await client.read_snapshot(BASE)).soc == 76
+    assert dongle.connections == 2
 
 
 async def test_unreachable_dongle_raises():

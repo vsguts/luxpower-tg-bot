@@ -46,6 +46,7 @@ class DongleClient:
         try:
             return decode_snapshot(registers, taken_at)
         except InvalidSnapshot as exc:
+            await self.close()
             raise DongleError(str(exc)) from exc
 
     async def read_input(self, start: int, count: int) -> tuple[int, ...]:
@@ -90,7 +91,9 @@ class DongleClient:
                 if response.exception:
                     raise DongleError(f"Modbus exception reading register {start}")
                 if len(response.values) != count:
-                    raise DongleError(f"expected {count} registers, got {len(response.values)}")
+                    # The cloud can read the same start register with another count on the shared socket.
+                    log.warning("skipping a reply with %d registers, expected %d", len(response.values), count)
+                    continue
                 return response.values
 
     async def _connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
