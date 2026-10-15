@@ -81,10 +81,11 @@ lxbot/schedule/
 
 - `Outage(start: datetime, end: datetime, certain: bool)`, timezone-aware. `certain=False` comes from the
   `maybe*` states.
-- `DaySchedule(day: date, outages: tuple[Outage, ...])`. Within a day, adjacent intervals of the same
+- `DaySchedule(group: str, day: date, outages: tuple[Outage, ...])`; the group gives the digest its
+  "черга 3.2" label. Within a day, adjacent intervals of the same
   certainty are merged.
-- `Schedule(group, days: dict[date, DaySchedule], dtek_updated: datetime | None, fetched_at: datetime,
-  source_ok: bool, source_updated: datetime)`.
+- `Schedule(group, days: dict[date, DaySchedule], dtek_updated: datetime | None, source_ok: bool,
+  source_updated: datetime | None)`. The service keeps the fetch time next to it.
 - `Schedule.timeline()` returns every known outage in order, merging same-certainty intervals across
   midnight. The comparison rules and `/status` use it, so "з 22:00 до 02:00" reads as one interval.
 
@@ -145,8 +146,10 @@ Digest (09:00 today, 21:00 tomorrow):
 - **Polling:** every `SCHEDULE_POLL_INTERVAL` (15 min) with `If-None-Match`; a 304 keeps the current
   schedule. Timeout 20 s.
 - **Persistence:**
-  - each fetched day is stored in the `state` table (`schedule:<YYYY-MM-DD>`, normalized outages);
-  - so are the digest flags (`schedule-digest:<kind>:<YYYY-MM-DD>`).
+  - the last good schedule (its days with normalized outages, the fetch time and the source metadata) is
+    stored in the `state` table under `schedule`;
+  - the digest flags are stored under `schedule-digests` (the day of the last morning digest, the day
+    covered by the last evening digest, and the pending "not published" day).
   - On start the service loads them, so a restart without internet still knows the schedule and does not
     resend digests.
 - **Digests** are clock-driven: a check every minute in local time.
@@ -166,8 +169,8 @@ Digest (09:00 today, 21:00 tomorrow):
   - The admin gets one "не оновлюється" message, and one "знову оновлюється" on recovery.
   - The last good schedule stays in use.
 - **Journal:** digests, change notices and source health go through `Notifier.publish` as events
-  (`schedule_today`, `schedule_tomorrow`, `schedule_tomorrow_pending`, `schedule_changed`,
-  `schedule_source_down`, `schedule_source_up`). The day's outages go into the event payload for later
+  (`schedule_today`, `schedule_tomorrow`, `schedule_tomorrow_pending`, `schedule_tomorrow_published`,
+  `schedule_changed`, `schedule_source_down`, `schedule_source_up`). The day's outages go into the event payload for later
   statistics.
 
 ## Event model change
