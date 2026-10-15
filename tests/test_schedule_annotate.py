@@ -69,3 +69,15 @@ async def test_order_is_kept():
     low = Event(EventType.BATTERY_LOW, local(2026, 10, 15, 11, 19), 25)
     events, _ = await publish(SCHEDULE, lost, low)
     assert [e.type for e in events] == [EventType.GRID_LOST, EventType.BATTERY_LOW]
+
+
+async def test_a_failing_schedule_never_loses_the_grid_alert(caplog):
+    class BrokenProvider:
+        def current(self, now):
+            raise RuntimeError("bug")
+
+    lost = Event(EventType.GRID_LOST, local(2026, 10, 15, 11, 18), 80, timedelta(hours=1))
+    sink = RecordingSink()
+    await ScheduleAnnotator(sink, BrokenProvider(), WINDOW).publish([lost])
+    assert sink.events == [lost]
+    assert "schedule annotation failed" in caplog.text
