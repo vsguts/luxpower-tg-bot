@@ -196,9 +196,9 @@ async def test_no_schedule_no_digest(db):
 
 
 async def test_source_down_after_an_hour_then_up(db):
-    # With no schedule and a digest due, every tick retries; the third failure is at 10:00.
+    # With no schedule and a digest due, retries are throttled to 5 min; DOWN comes from the health check at 10:00.
     down = ScheduleSourceError("down")
-    service, sink, _ = await make_service(db, down, down, down, DOC)
+    service, sink, _ = await make_service(db, down, down, DOC)
     await service.tick(at(9, 0))
     await service.tick(at(9, 59))
     assert sink.events == []
@@ -266,5 +266,57 @@ async def test_digest_and_change_events_carry_their_day_schedule(db):
         EventType.SCHEDULE_TOMORROW_PUBLISHED,
         EventType.SCHEDULE_CHANGED,
     ]
-    carrying = [e for e in sink.events if e.type != EventType.SCHEDULE_TOMORROW_PENDING]
-    assert all(e.schedule is not None for e in carrying)
+    today, pending, published, changed = sink.events
+    assert pending.schedule is None
+    assert today.schedule.day == TODAY
+    assert published.schedule.day == TOMORROW
+    assert changed.schedule.day == TOMORROW
+
+
+async def test_change_during_the_night_after_the_evening_digest_is_announced(db):
+    night = make_document({TODAY: TODAY_OFF, TOMORROW: {**TOMORROW_OFF, 20: "no"}})
+    service, sink, _ = await make_service(db, DOC, night)
+    await service.tick(at(21, 0))
+    await service.tick(at(2, 0, day=16))
+    assert types(sink) == [EventType.SCHEDULE_TOMORROW, EventType.SCHEDULE_CHANGED]
+    assert sink.events[1].schedule.day == TOMORROW
+    assert sink.events[1].schedule.outages == (
+        Outage(at(11, day=16), at(15, day=16)),
+        Outage(at(19, day=16), at(20, day=16)),
+    )
+
+
+async def test_not_modified_after_a_parse_failure_still_counts_as_down(db):
+    unparsable = {"lastUpdated": "2026-10-15T00:00:00Z"}
+    service, sink, _ = await make_service(db, DOC, unparsable, None)
+    moment = at(9, 0)
+    while moment <= at(15, 15):
+        await service.tick(moment)
+        moment += timedelta(minutes=15)
+    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
+    assert sink.events[1].at == at(9, 15)
+    assert service.current(at(14, 59)) is not None
+    assert service.current(at(15, 1)) is None
+
+
+async def test_dead_source_is_not_hammered_while_a_digest_is_due(db):
+    service, sink, source = await make_service(db, ScheduleSourceError("down"))
+    moment = at(9, 0)
+    while moment <= at(9, 30):
+        await service.tick(moment)
+        moment += timedelta(minutes=1)
+    assert source.calls <= 7
+
+
+async def test_source_down_is_remembered_across_a_restart(db):
+    down = ScheduleSourceError("down")
+    first, first_sink, _ = await make_service(db, down)
+    await first.tick(at(9, 0))
+    await first.tick(at(10, 0))
+    assert types(first_sink) == [EventType.SCHEDULE_SOURCE_DOWN]
+    second, second_sink, _ = await make_service(db, down)
+    await second.tick(at(10, 15))
+    assert second_sink.events == []
+    third, third_sink, _ = await make_service(db, DOC)
+    await third.tick(at(10, 30))
+    assert types(third_sink) == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TODAY]

@@ -17,9 +17,11 @@ log = logging.getLogger(__name__)
 DEFAULT_URL = "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/kyiv-region.json"
 SCHEDULE_KEY = "schedule"
 DIGESTS_KEY = "schedule-digests"
+HEALTH_KEY = "schedule-health"
 TICK_SECONDS = 60.0
 STALE_AFTER = timedelta(hours=6)
 REFRESH_BEFORE_DIGEST = timedelta(minutes=15)
+DIGEST_RETRY = timedelta(minutes=5)
 SOURCE_MAX_AGE = timedelta(hours=1)
 SOURCE_DOWN_AFTER = timedelta(hours=1)
 
@@ -80,6 +82,7 @@ class ScheduleService:
         self._last_attempt: datetime | None = None
         self._fetch_ok = True
         self._digests = _Digests()
+        self._parse_failed = False
         self._failing_since: datetime | None = None
         self._down_reported = False
 
@@ -106,6 +109,10 @@ class ScheduleService:
         digests = await self._db.load_state(DIGESTS_KEY)
         if digests:
             self._digests = _Digests.from_dict(digests)
+        health = await self._db.load_state(HEALTH_KEY)
+        if health:
+            self._failing_since = _optional_time(health["failing_since"])
+            self._down_reported = health["down_reported"]
 
     async def run(self) -> None:
         while True:
@@ -119,7 +126,7 @@ class ScheduleService:
         events: list[Event] = []
         if self._refresh_due(now):
             events += await self._refresh(now)
-        events += self._health_events(now)
+        events += await self._health_events(now)
         events += await self._digest_events(now)
         if events:
             await self._sink.publish(events)
@@ -130,9 +137,10 @@ class ScheduleService:
     def _refresh_due(self, now: datetime) -> bool:
         if self._last_attempt is None or now - self._last_attempt >= self._config.poll_interval:
             return True
-        # A digest goes out from the freshest data, not from a fetch up to 15 min old.
+        # A digest goes out from the freshest data, not from a fetch up to 15 min old. The retry
+        # pause keeps a dead source from being hit (and logged) every minute while a digest is due.
         outdated = self._fetched_at is None or now - self._fetched_at > REFRESH_BEFORE_DIGEST
-        return outdated and self._digest_due(now)
+        return outdated and now - self._last_attempt >= DIGEST_RETRY and self._digest_due(now)
 
     async def _refresh(self, now: datetime) -> list[Event]:
         self._last_attempt = now
@@ -142,7 +150,14 @@ class ScheduleService:
         except (ScheduleSourceError, ScheduleParseError) as exc:
             log.warning("schedule refresh failed: %s", exc)
             self._fetch_ok = False
+            self._parse_failed = isinstance(exc, ScheduleParseError) or self._parse_failed
             return []
+        # The source remembers the ETag of a document we failed to parse, so its next answer is a 304
+        # that must not pass for a successful refresh.
+        if fresh is None and self._parse_failed:
+            self._fetch_ok = False
+            return []
+        self._parse_failed = False
         self._fetch_ok = True
         self._fetched_at = now
         events: list[Event] = []
@@ -165,12 +180,17 @@ class ScheduleService:
                 continue
             if previous.outages == schedule.outages:
                 continue
-            announced = (day == today and self._digests.today == today) or (
-                day == tomorrow and self._digests.tomorrow == tomorrow and self._digests.pending != tomorrow
-            )
-            if announced:
+            if self._announced(day, today):
                 events.append(Event(EventType.SCHEDULE_CHANGED, now, schedule=schedule))
         return events
+
+    def _announced(self, day: date, today: date) -> bool:
+        digests = self._digests
+        if day == today:
+            # After midnight the previous evening's digest is the announcement for the new today.
+            return digests.today == today or (digests.tomorrow == today and digests.pending != today)
+        tomorrow = today + timedelta(days=1)
+        return day == tomorrow and digests.tomorrow == tomorrow and digests.pending != tomorrow
 
     def _healthy(self, now: datetime) -> bool:
         if not self._fetch_ok or self._schedule is None or not self._schedule.source_ok:
@@ -178,7 +198,20 @@ class ScheduleService:
         updated = self._schedule.source_updated
         return updated is None or now - updated <= SOURCE_MAX_AGE
 
-    def _health_events(self, now: datetime) -> list[Event]:
+    async def _health_events(self, now: datetime) -> list[Event]:
+        before = (self._failing_since, self._down_reported)
+        events = self._evaluate_health(now)
+        if (self._failing_since, self._down_reported) != before:
+            await self._db.save_state(
+                HEALTH_KEY,
+                {
+                    "failing_since": self._failing_since.isoformat() if self._failing_since else None,
+                    "down_reported": self._down_reported,
+                },
+            )
+        return events
+
+    def _evaluate_health(self, now: datetime) -> list[Event]:
         if self._healthy(now):
             self._failing_since = None
             if not self._down_reported:
