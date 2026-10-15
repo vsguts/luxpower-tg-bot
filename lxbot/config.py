@@ -1,4 +1,6 @@
+import math
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import time, timedelta
@@ -15,6 +17,7 @@ from lxbot.schedule.service import DEFAULT_URL, ScheduleConfig
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 
 T = TypeVar("T", int, float)
+_QUEUE = re.compile(r"\d+\.\d+", re.ASCII)
 
 
 class ConfigError(Exception):
@@ -40,6 +43,20 @@ def _number(env: Mapping[str, str], name: str, default: str, convert: Callable[[
         raise ConfigError(f"{name} must be a number") from exc
 
 
+def _positive(env: Mapping[str, str], name: str, default: str) -> float:
+    value = _number(env, name, default, float)
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(f"{name} must be a positive number")
+    return value
+
+
+def _duration(env: Mapping[str, str], name: str, default: str, unit: str) -> timedelta:
+    try:
+        return timedelta(**{unit: _positive(env, name, default)})
+    except OverflowError as exc:
+        raise ConfigError(f"{name} is too large") from exc
+
+
 def _serial(env: Mapping[str, str], name: str) -> str:
     value = env[name]
     if len(value) != SERIAL_LEN or not value.isascii():
@@ -58,20 +75,27 @@ def _timezone(env: Mapping[str, str]) -> ZoneInfo:
 def _clock_time(env: Mapping[str, str], name: str, default: str) -> time:
     value = env.get(name, default)
     try:
-        return time.fromisoformat(value)
+        moment = time.fromisoformat(value)
     except ValueError as exc:
         raise ConfigError(f"{name} must be HH:MM") from exc
+    # Digest times are compared with naive local clock times: an offset would fail every tick.
+    if moment.tzinfo is not None:
+        raise ConfigError(f"{name} must be HH:MM without a time zone")
+    return moment
 
 
 def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     queue = env.get("SCHEDULE_GROUP", "").strip()
     if not queue:
         return None
+    queue = queue.removeprefix("GPV")
+    if not _QUEUE.fullmatch(queue):
+        raise ConfigError("SCHEDULE_GROUP must look like 3.2")
     config = ScheduleConfig(
         group=group_key(queue),
         url=env.get("SCHEDULE_URL") or DEFAULT_URL,
-        poll_interval=timedelta(seconds=_number(env, "SCHEDULE_POLL_INTERVAL", "900", float)),
-        match_window=timedelta(minutes=_number(env, "SCHEDULE_MATCH_WINDOW", "30", float)),
+        poll_interval=_duration(env, "SCHEDULE_POLL_INTERVAL", "900", "seconds"),
+        match_window=_duration(env, "SCHEDULE_MATCH_WINDOW", "30", "minutes"),
         today_at=_clock_time(env, "DIGEST_TODAY_AT", "09:00"),
         tomorrow_at=_clock_time(env, "DIGEST_TOMORROW_AT", "21:00"),
     )
@@ -105,7 +129,7 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         admin_chat_id=_number(env, "ADMIN_CHAT_ID", "", int),
         dongle=dongle_config_from_env(env),
         thresholds=thresholds,
-        poll_interval=_number(env, "POLL_INTERVAL", "15", float),
+        poll_interval=_positive(env, "POLL_INTERVAL", "15"),
         tz=_timezone(env),
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),

@@ -111,3 +111,34 @@ def test_schedule_overrides():
 def test_bad_schedule_values(name, value, message):
     with pytest.raises(ConfigError, match=message):
         settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
+
+
+@pytest.mark.parametrize("name", ["SCHEDULE_POLL_INTERVAL", "SCHEDULE_MATCH_WINDOW", "POLL_INTERVAL"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "-inf", "1e400"])
+def test_intervals_must_be_finite_and_positive(name, value):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
+
+
+@pytest.mark.parametrize("name", ["SCHEDULE_POLL_INTERVAL", "SCHEDULE_MATCH_WINDOW"])
+def test_schedule_durations_beyond_timedelta_are_named(name):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: "1e300"})
+
+
+def test_schedule_group_accepts_the_gpv_prefix():
+    assert settings_from_env(ENV | {"SCHEDULE_GROUP": "GPV3.2"}).schedule.group == "GPV3.2"
+    assert settings_from_env(ENV | {"SCHEDULE_GROUP": " 6.1 "}).schedule.group == "GPV6.1"
+
+
+@pytest.mark.parametrize("value", ["3", "abc", "GPV", "3.2.1", "3.2a", "GPVGPV3.2", "gpv3.2", "3,2"])
+def test_schedule_group_must_look_like_a_queue(value):
+    with pytest.raises(ConfigError, match="SCHEDULE_GROUP must look like 3.2"):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": value})
+
+
+@pytest.mark.parametrize("name", ["DIGEST_TODAY_AT", "DIGEST_TOMORROW_AT"])
+@pytest.mark.parametrize("value", ["09:00+02:00", "20:00Z"])
+def test_digest_times_take_no_time_zone(name, value):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
