@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 
@@ -18,6 +19,7 @@ from lxbot.storage.db import Database
 log = logging.getLogger(__name__)
 
 TELEGRAM_RETRY_DELAY = 30.0
+SHUTDOWN_DRAIN_SECONDS = 5.0
 _UNREACHABLE = (TelegramNetworkError, TelegramServerError)
 
 COMMANDS = [
@@ -72,6 +74,20 @@ def stop_when_ended(dispatcher: Dispatcher, main: asyncio.Task) -> Callable[[asy
     return on_done
 
 
+async def stop_background(
+    poller_task: asyncio.Task,
+    notifier_task: asyncio.Task,
+    notifier: Notifier,
+    drain_seconds: float = SHUTDOWN_DRAIN_SECONDS,
+) -> None:
+    poller_task.cancel()
+    # An alert queued just before a restart still goes out, unless Telegram is unreachable.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(notifier.join(), drain_seconds)
+    notifier_task.cancel()
+    await asyncio.gather(poller_task, notifier_task, return_exceptions=True)
+
+
 async def run(settings: Settings) -> None:
     db = await Database.open(settings.db_path)
     client = DongleClient(settings.dongle)
@@ -85,8 +101,8 @@ async def run(settings: Settings) -> None:
     try:
         await poller.load()
         background = [
-            asyncio.create_task(notifier.run(), name="notifier"),
             asyncio.create_task(poller.run(), name="poller"),
+            asyncio.create_task(notifier.run(), name="notifier"),
         ]
         for task in background:
             task.add_done_callback(on_done)
@@ -95,8 +111,8 @@ async def run(settings: Settings) -> None:
     finally:
         for task in background:
             task.remove_done_callback(on_done)
-            task.cancel()
-        await asyncio.gather(*background, return_exceptions=True)
+        if background:
+            await stop_background(*background, notifier)
         await client.close()
         await db.close()
         await bot.session.close()
