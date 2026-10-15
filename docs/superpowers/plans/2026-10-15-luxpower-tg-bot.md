@@ -3493,7 +3493,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 Not code: every step that changes something outside the repository needs the user's explicit OK.
 
 - [ ] **Step 1: Push the branch to GitHub** (ask first; the repository is public). Before pushing,
-  scan for leaks: `git grep -n -E 'DG6|62530|192\.168\.' -- . ':!docs'` must print nothing.
+  scan for leaks with the real values from the local `.env` (never type them into a tracked file):
+  `git grep -n -F -e "$DONGLE_SERIAL" -e "$INVERTER_SERIAL" -e "$BOT_TOKEN"` must print nothing.
 - [ ] **Step 2: Make sure `inverter.lan` resolves** from rock2 (the separate mikrotirk change
   "Static DHCP lease + inverter.lan"): `ssh rock2.lan 'getent hosts inverter.lan'`. Until it does,
   `DONGLE_HOST` can be the dongle's IP.
