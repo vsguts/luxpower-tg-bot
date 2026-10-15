@@ -85,6 +85,9 @@ def status_text(snapshot: Snapshot | None, state: State | None, now: datetime, t
         grid = f"є · {snapshot.grid_v:.0f} В"
     else:
         grid = f"немає вже {format_duration(now - state.grid.since)}"
+    # The latest reading disagrees with the debounced state: a change may be under way.
+    if snapshot.grid_present_given(state.grid.value) != state.grid.value:
+        grid += " (перевіряю)"
     if snapshot.battery_w > 0:
         flow = f" · заряджається {format_power(snapshot.battery_w)}"
     elif snapshot.battery_w < 0:

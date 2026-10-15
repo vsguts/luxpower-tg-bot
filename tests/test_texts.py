@@ -116,3 +116,18 @@ def test_subscribers_text_marks_each_status():
         ]
     )
     assert text.splitlines()[1:] == ["✅ Оля", "⏳ Петро", "🚫 Ігор"]
+
+
+def test_status_text_says_when_a_grid_change_is_being_checked():
+    present = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
+    absent = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)))
+    going = texts.status_text(make_snapshot(1, grid=False), present, at(1), KYIV)
+    coming = texts.status_text(make_snapshot(1), absent, at(1), KYIV)
+    assert "⚡ Мережа: є · 0 В (перевіряю)" in going
+    assert "⚡ Мережа: немає вже менше хвилини (перевіряю)" in coming
+
+
+def test_status_text_does_not_check_a_sagging_grid_the_detector_holds():
+    state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
+    text = texts.status_text(make_snapshot(1, grid_v=175.0), state, at(1), KYIV)
+    assert "⚡ Мережа: є · 175 В\n" in text
