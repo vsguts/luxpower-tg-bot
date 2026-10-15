@@ -1,7 +1,7 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from aiogram import Dispatcher
+from aiogram.types import Message
 
 from lxbot.bot import texts
 from lxbot.bot.handlers import Decision, on_decision, on_remove, on_start, on_status, on_stop, on_subscribers, router
@@ -33,16 +33,23 @@ async def test_start_sends_an_escaped_request_to_the_admin(db):
 
 async def test_admin_approval_notifies_the_user(db):
     await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
-    query = SimpleNamespace(
-        from_user=SimpleNamespace(id=ADMIN),
-        message=SimpleNamespace(html_text="🆕 Новий запит", edit_text=AsyncMock()),
-        answer=AsyncMock(),
-    )
+    admin_message = MagicMock(spec=Message, html_text="🆕 Новий запит", edit_text=AsyncMock())
+    query = SimpleNamespace(from_user=SimpleNamespace(id=ADMIN), message=admin_message, answer=AsyncMock())
     bot = SimpleNamespace(send_message=AsyncMock())
     await on_decision(query, Decision(action="approve", chat_id=42), db=db, settings=make_settings(ADMIN), bot=bot)
     assert (await db.get_subscriber(42)).status is SubscriberStatus.APPROVED
     assert bot.send_message.await_args.args == (42, texts.SUBSCRIBED)
-    assert texts.APPROVED_MARK in query.message.edit_text.await_args.args[0]
+    assert texts.APPROVED_MARK in admin_message.edit_text.await_args.args[0]
+
+
+async def test_approval_survives_an_inaccessible_admin_message(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=ADMIN), message=None, answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    await on_decision(query, Decision(action="approve", chat_id=42), db=db, settings=make_settings(ADMIN), bot=bot)
+    assert (await db.get_subscriber(42)).status is SubscriberStatus.APPROVED
+    assert bot.send_message.await_args.args == (42, texts.SUBSCRIBED)
+    query.answer.assert_awaited_once_with()
 
 
 async def test_decision_from_a_non_admin_is_ignored(db):
@@ -70,9 +77,7 @@ async def test_status_for_an_approved_user(db):
     assert "🔋 Батарея: 80%" in msg.answer.await_args.args[0]
 
 
-async def test_router_registers_every_handler(db):
-    dispatcher = Dispatcher(db=db, settings=make_settings(ADMIN), poller=SimpleNamespace(latest=None, state=None))
-    dispatcher.include_router(router)
+def test_router_registers_every_handler():
     message_callbacks = [h.callback for h in router.message.handlers]
     query_callbacks = [h.callback for h in router.callback_query.handlers]
     assert message_callbacks.count(on_status) == 2

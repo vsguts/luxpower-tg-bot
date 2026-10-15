@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import (
@@ -78,13 +78,16 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
     if subscriber is None:
         await query.answer(texts.ALREADY_DECIDED)
         return
-    mark = texts.APPROVED_MARK if approve else texts.REJECTED_MARK
-    await query.message.edit_text(f"{query.message.html_text}\n\n{mark}")
     with contextlib.suppress(TelegramForbiddenError):
         if approve:
             await bot.send_message(subscriber.chat_id, texts.SUBSCRIBED, reply_markup=status_keyboard())
         else:
             await bot.send_message(subscriber.chat_id, texts.REQUEST_REJECTED)
+    # Telegram hands over an inaccessible message for requests older than ~48 h; the decision is already stored.
+    if isinstance(query.message, Message):
+        mark = texts.APPROVED_MARK if approve else texts.REJECTED_MARK
+        with contextlib.suppress(TelegramBadRequest):
+            await query.message.edit_text(f"{query.message.html_text}\n\n{mark}")
     await query.answer()
 
 
