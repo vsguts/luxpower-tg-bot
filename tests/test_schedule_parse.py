@@ -134,6 +134,19 @@ def test_fall_back_repeated_wall_hour_lasts_two_real_hours():
     assert outage.duration == timedelta(hours=2)
 
 
+@pytest.mark.parametrize("state", ["no", "maybe", "second"])
+def test_nonexistent_spring_forward_hour_yields_no_outage(state):
+    day = parse_schedule(make_document({SPRING_FORWARD: {4: state}}), GROUP, KYIV).days[SPRING_FORWARD]
+    assert day.outages == ()
+
+
+@pytest.mark.parametrize("day", [FALL_BACK, SPRING_FORWARD])
+@pytest.mark.parametrize("state", ["no", "first", "second", "maybe", "mfirst", "msecond", "weird"])
+def test_every_outage_on_dst_days_has_positive_length(day, state):
+    schedule = parse_schedule(make_document({day: {slot: state for slot in range(1, 25)}}), GROUP, KYIV)
+    assert all(outage.start < outage.end for outage in schedule.days[day].outages)
+
+
 @pytest.mark.parametrize("slot", ["0", "25"])
 def test_out_of_range_slot_is_an_error(slot):
     document = make_document({TODAY: {}})

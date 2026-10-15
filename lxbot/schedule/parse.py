@@ -74,15 +74,15 @@ def _slot_outages(day: date, slots: Mapping[str, str], tz: ZoneInfo) -> list[Out
         first, last, certain = span
         # Each boundary is a wall-clock reading converted on its own: adding minutes to an aware
         # datetime counts elapsed time and splits adjacent slots around a DST switch. time() also
-        # rejects slots outside 1..24.
+        # rejects slots outside 1..24. A repeated fall-back hour lasts two real hours, so its
+        # "second" half spans 90 min; that is documented behavior, not a bug.
         hour_start = datetime.combine(day, time(int(slot) - 1))
-        outages.append(
-            Outage(
-                _wall_to_utc(hour_start + timedelta(minutes=first), tz),
-                _wall_to_utc(hour_start + timedelta(minutes=last), tz),
-                certain,
-            )
-        )
+        start = _wall_to_utc(hour_start + timedelta(minutes=first), tz)
+        end = _wall_to_utc(hour_start + timedelta(minutes=last), tz)
+        # The wall hour missing on spring-forward converts to an empty or inverted interval; drop it.
+        if end <= start:
+            continue
+        outages.append(Outage(start, end, certain))
     return outages
 
 
