@@ -130,3 +130,12 @@ async def test_shutdown_gives_up_on_a_stuck_queue(db):
     await asyncio.wait_for(stop_background(poller_task, notifier_task, notifier, drain_seconds=0.01), 1)
     assert sender.sent == []
     assert notifier_task.cancelled()
+
+
+async def test_stop_background_cancels_extra_tasks(db):
+    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, 1, ZoneInfo("Europe/Kyiv"))
+    poller_task = asyncio.create_task(asyncio.sleep(3600))
+    notifier_task = asyncio.create_task(notifier.run())
+    schedule_task = asyncio.create_task(asyncio.sleep(3600))
+    await stop_background(poller_task, notifier_task, notifier, 0.1, others=[schedule_task])
+    assert schedule_task.cancelled()

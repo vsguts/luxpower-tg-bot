@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -14,6 +14,9 @@ from lxbot.config import Settings, settings_from_env
 from lxbot.luxpower.client import DongleClient
 from lxbot.monitor.poller import Poller
 from lxbot.notify.broadcast import Notifier
+from lxbot.schedule.annotate import ScheduleAnnotator
+from lxbot.schedule.service import ScheduleService
+from lxbot.schedule.source import HttpScheduleSource
 from lxbot.storage.db import Database
 
 log = logging.getLogger(__name__)
@@ -79,13 +82,17 @@ async def stop_background(
     notifier_task: asyncio.Task,
     notifier: Notifier,
     drain_seconds: float = SHUTDOWN_DRAIN_SECONDS,
+    *,
+    others: Sequence[asyncio.Task] = (),
 ) -> None:
     poller_task.cancel()
+    for task in others:
+        task.cancel()
     # An alert queued just before a restart still goes out, unless Telegram is unreachable.
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(notifier.join(), drain_seconds)
     notifier_task.cancel()
-    await asyncio.gather(poller_task, notifier_task, return_exceptions=True)
+    await asyncio.gather(poller_task, notifier_task, *others, return_exceptions=True)
 
 
 async def run(settings: Settings) -> None:
@@ -93,17 +100,24 @@ async def run(settings: Settings) -> None:
     client = DongleClient(settings.dongle)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     notifier = Notifier(bot, db, settings.admin_chat_id, settings.tz)
-    poller = Poller(client, db, notifier, settings.thresholds, settings.poll_interval)
-    dispatcher = Dispatcher(db=db, settings=settings, poller=poller)
+    source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
+    schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
+    sink = ScheduleAnnotator(notifier, schedules, settings.schedule.match_window) if schedules else notifier
+    poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
+    dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules)
     dispatcher.include_router(router)
     background: list[asyncio.Task] = []
     on_done = stop_when_ended(dispatcher, asyncio.current_task())
     try:
         await poller.load()
+        if schedules is not None:
+            await schedules.load()
         background = [
             asyncio.create_task(poller.run(), name="poller"),
             asyncio.create_task(notifier.run(), name="notifier"),
         ]
+        if schedules is not None:
+            background.append(asyncio.create_task(schedules.run(), name="schedule"))
         for task in background:
             task.add_done_callback(on_done)
         await wait_for_telegram(bot)
@@ -112,7 +126,9 @@ async def run(settings: Settings) -> None:
         for task in background:
             task.remove_done_callback(on_done)
         if background:
-            await stop_background(*background, notifier)
+            await stop_background(background[0], background[1], notifier, others=background[2:])
+        if source is not None:
+            await source.close()
         await client.close()
         await db.close()
         await bot.session.close()

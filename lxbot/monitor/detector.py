@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from lxbot.luxpower.registers import Snapshot
+from lxbot.schedule.compare import ScheduleMatch
+from lxbot.schedule.model import DaySchedule
 
 
 class EventType(StrEnum):
@@ -17,6 +19,13 @@ class EventType(StrEnum):
     GEN_STOPPED = "gen_stopped"
     DONGLE_DOWN = "dongle_down"
     DONGLE_UP = "dongle_up"
+    SCHEDULE_TODAY = "schedule_today"
+    SCHEDULE_TOMORROW = "schedule_tomorrow"
+    SCHEDULE_TOMORROW_PENDING = "schedule_tomorrow_pending"
+    SCHEDULE_TOMORROW_PUBLISHED = "schedule_tomorrow_published"
+    SCHEDULE_CHANGED = "schedule_changed"
+    SCHEDULE_SOURCE_DOWN = "schedule_source_down"
+    SCHEDULE_SOURCE_UP = "schedule_source_up"
 
 
 class Audience(StrEnum):
@@ -30,6 +39,8 @@ _AUDIENCES = {
     EventType.GEN_STOPPED: Audience.JOURNAL,
     EventType.DONGLE_DOWN: Audience.ADMIN,
     EventType.DONGLE_UP: Audience.ADMIN,
+    EventType.SCHEDULE_SOURCE_DOWN: Audience.ADMIN,
+    EventType.SCHEDULE_SOURCE_UP: Audience.ADMIN,
 }
 
 
@@ -40,6 +51,9 @@ class Event:
     soc: int | None = None
     previous_duration: timedelta | None = None
     gen_was_running: bool = False
+    schedule: DaySchedule | None = None
+    match: ScheduleMatch | None = None
+    source_updated: datetime | None = None
 
     @property
     def audience(self) -> Audience:
@@ -47,11 +61,18 @@ class Event:
 
     def to_payload(self) -> dict:
         duration = self.previous_duration
-        return {
+        payload = {
             "soc": self.soc,
             "previous_duration_s": int(duration.total_seconds()) if duration is not None else None,
             "gen_was_running": self.gen_was_running,
         }
+        if self.schedule is not None:
+            payload["schedule"] = self.schedule.to_dict()
+        if self.match is not None:
+            payload["match"] = self.match.to_payload()
+        if self.source_updated is not None:
+            payload["source_updated"] = self.source_updated.isoformat()
+        return payload
 
 
 @dataclass(frozen=True)

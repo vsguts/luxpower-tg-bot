@@ -1,8 +1,10 @@
+from datetime import time, timedelta
 from pathlib import Path
 
 import pytest
 
 from lxbot.config import ConfigError, settings_from_env
+from lxbot.schedule.service import DEFAULT_URL
 from tests.fixtures import DONGLE_SERIAL, INVERTER_SERIAL
 
 ENV = {
@@ -63,3 +65,80 @@ def test_non_numeric_poll_interval_is_named():
 def test_unknown_time_zone_is_named():
     with pytest.raises(ConfigError, match="TZ"):
         settings_from_env(ENV | {"TZ": "Mars/Base"})
+
+
+def test_schedule_is_off_without_a_group():
+    assert settings_from_env(ENV).schedule is None
+    assert settings_from_env(ENV | {"SCHEDULE_GROUP": "  "}).schedule is None
+
+
+def test_schedule_defaults():
+    schedule = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2"}).schedule
+    assert schedule.group == "GPV3.2"
+    assert schedule.url == DEFAULT_URL
+    assert schedule.poll_interval == timedelta(minutes=15)
+    assert schedule.match_window == timedelta(minutes=30)
+    assert (schedule.today_at, schedule.tomorrow_at) == (time(9), time(21))
+
+
+def test_schedule_overrides():
+    env = ENV | {
+        "SCHEDULE_GROUP": "6.2",
+        "SCHEDULE_URL": "https://example.test/x.json",
+        "SCHEDULE_POLL_INTERVAL": "600",
+        "SCHEDULE_MATCH_WINDOW": "20",
+        "DIGEST_TODAY_AT": "08:30",
+        "DIGEST_TOMORROW_AT": "20:00",
+    }
+    schedule = settings_from_env(env).schedule
+    assert schedule.group == "GPV6.2"
+    assert schedule.url == "https://example.test/x.json"
+    assert schedule.poll_interval == timedelta(minutes=10)
+    assert schedule.match_window == timedelta(minutes=20)
+    assert (schedule.today_at, schedule.tomorrow_at) == (time(8, 30), time(20))
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("DIGEST_TODAY_AT", "9am", "DIGEST_TODAY_AT"),
+        ("DIGEST_TOMORROW_AT", "25:00", "DIGEST_TOMORROW_AT"),
+        ("SCHEDULE_MATCH_WINDOW", "half", "SCHEDULE_MATCH_WINDOW"),
+        ("SCHEDULE_POLL_INTERVAL", "often", "SCHEDULE_POLL_INTERVAL"),
+        ("DIGEST_TODAY_AT", "22:00", "earlier than DIGEST_TOMORROW_AT"),
+    ],
+)
+def test_bad_schedule_values(name, value, message):
+    with pytest.raises(ConfigError, match=message):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
+
+
+@pytest.mark.parametrize("name", ["SCHEDULE_POLL_INTERVAL", "SCHEDULE_MATCH_WINDOW", "POLL_INTERVAL"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "-inf", "1e400"])
+def test_intervals_must_be_finite_and_positive(name, value):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
+
+
+@pytest.mark.parametrize("name", ["SCHEDULE_POLL_INTERVAL", "SCHEDULE_MATCH_WINDOW"])
+def test_schedule_durations_beyond_timedelta_are_named(name):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: "1e300"})
+
+
+def test_schedule_group_accepts_the_gpv_prefix():
+    assert settings_from_env(ENV | {"SCHEDULE_GROUP": "GPV3.2"}).schedule.group == "GPV3.2"
+    assert settings_from_env(ENV | {"SCHEDULE_GROUP": " 6.1 "}).schedule.group == "GPV6.1"
+
+
+@pytest.mark.parametrize("value", ["3", "abc", "GPV", "3.2.1", "3.2a", "GPVGPV3.2", "gpv3.2", "3,2"])
+def test_schedule_group_must_look_like_a_queue(value):
+    with pytest.raises(ConfigError, match="SCHEDULE_GROUP must look like 3.2"):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": value})
+
+
+@pytest.mark.parametrize("name", ["DIGEST_TODAY_AT", "DIGEST_TOMORROW_AT"])
+@pytest.mark.parametrize("value", ["09:00+02:00", "20:00Z"])
+def test_digest_times_take_no_time_zone(name, value):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -6,9 +7,11 @@ from aiogram.types import Message
 from lxbot.bot import texts
 from lxbot.bot.handlers import Decision, on_decision, on_remove, on_start, on_status, on_stop, on_subscribers, router
 from lxbot.monitor.detector import initial_state
+from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import SubscriberStatus
 from tests.conftest import make_settings
 from tests.factories import make_snapshot
+from tests.schedule_factories import GROUP, KYIV
 
 ADMIN = 1
 
@@ -124,3 +127,17 @@ def test_router_registers_every_handler():
         assert callback in message_callbacks
     for callback in (on_decision, on_remove):
         assert callback in query_callbacks
+
+
+async def test_status_shows_the_next_planned_outage(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    snapshot = make_snapshot(0, soc=80)
+    poller = SimpleNamespace(latest=snapshot, state=initial_state(snapshot))
+    # on_status uses the real clock, so the outage is placed relative to it.
+    start = datetime.now(UTC) + timedelta(hours=2)
+    day = start.astimezone(KYIV).date()
+    schedule = Schedule(GROUP, {day: DaySchedule(GROUP, day, (Outage(start, start + timedelta(hours=4)),))})
+    schedules = SimpleNamespace(current=lambda now: schedule)
+    msg = message(42)
+    await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
+    assert "📅 Наступне відключення:" in msg.answer.await_args.args[0]
