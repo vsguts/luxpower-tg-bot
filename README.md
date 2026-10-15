@@ -15,6 +15,18 @@ Design: `docs/superpowers/specs/2026-10-15-luxpower-tg-bot-design.md`.
 | `/stop` | subscribers | unsubscribe (`/start` brings you back without approval) |
 | `/subscribers` | admin | list subscribers; remove, approve, reject or restore one |
 
+## Outage schedule
+
+With `SCHEDULE_GROUP` set (e.g. `3.2`), the bot follows the DTEK KREM planned outage schedule for that
+queue. The source is [outage-data-ua](https://github.com/Baskerville42/outage-data-ua) (MIT), which
+scrapes DTEK every ~5 minutes; it is polled every 15 minutes.
+
+- 09:00: today's schedule; 21:00: tomorrow's (or "not published yet", then a message when it appears).
+- "🔄 Графік змінився" when a day's schedule changes after its digest went out.
+- Grid lost / restored messages say whether the change matches the schedule (±30 min) and what is
+  expected next; `/status` shows the next planned change.
+- The admin is told when the source stops updating for an hour.
+
 ## Run
 
 ```bash

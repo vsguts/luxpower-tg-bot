@@ -1,6 +1,7 @@
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import time, timedelta
 from pathlib import Path
 from typing import TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -8,6 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
+from lxbot.schedule.parse import group_key
+from lxbot.schedule.service import DEFAULT_URL, ScheduleConfig
 
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 
@@ -27,6 +30,7 @@ class Settings:
     poll_interval: float
     tz: ZoneInfo
     db_path: Path
+    schedule: ScheduleConfig | None = None
 
 
 def _number(env: Mapping[str, str], name: str, default: str, convert: Callable[[str], T]) -> T:
@@ -49,6 +53,31 @@ def _timezone(env: Mapping[str, str]) -> ZoneInfo:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ConfigError(f"TZ is not a known time zone: {name}") from exc
+
+
+def _clock_time(env: Mapping[str, str], name: str, default: str) -> time:
+    value = env.get(name, default)
+    try:
+        return time.fromisoformat(value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be HH:MM") from exc
+
+
+def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
+    queue = env.get("SCHEDULE_GROUP", "").strip()
+    if not queue:
+        return None
+    config = ScheduleConfig(
+        group=group_key(queue),
+        url=env.get("SCHEDULE_URL") or DEFAULT_URL,
+        poll_interval=timedelta(seconds=_number(env, "SCHEDULE_POLL_INTERVAL", "900", float)),
+        match_window=timedelta(minutes=_number(env, "SCHEDULE_MATCH_WINDOW", "30", float)),
+        today_at=_clock_time(env, "DIGEST_TODAY_AT", "09:00"),
+        tomorrow_at=_clock_time(env, "DIGEST_TOMORROW_AT", "21:00"),
+    )
+    if not config.today_at < config.tomorrow_at:
+        raise ConfigError("DIGEST_TODAY_AT must be earlier than DIGEST_TOMORROW_AT")
+    return config
 
 
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:
@@ -79,4 +108,5 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         poll_interval=_number(env, "POLL_INTERVAL", "15", float),
         tz=_timezone(env),
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
+        schedule=schedule_config_from_env(env),
     )

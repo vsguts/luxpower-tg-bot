@@ -110,11 +110,13 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
 
 @router.message(Command("status"))
 @router.message(F.text == texts.STATUS_BUTTON)
-async def on_status(message: Message, db: Database, settings: Settings, poller) -> None:
+async def on_status(message: Message, db: Database, settings: Settings, poller, schedules=None) -> None:
     if not await subscriptions.is_approved(db, message.chat.id):
         await message.answer(texts.NOT_SUBSCRIBED)
         return
-    await message.answer(texts.status_text(poller.latest, poller.state, datetime.now(UTC), settings.tz))
+    now = datetime.now(UTC)
+    schedule = schedules.current(now) if schedules is not None else None
+    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule))
 
 
 @router.message(Command("stop"))
