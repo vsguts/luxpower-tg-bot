@@ -110,3 +110,18 @@ async def test_run_survives_an_unexpected_error(db):
         pass
     assert source.calls == 3
     assert poller.latest is not None
+
+
+async def test_run_leaves_loading_to_the_caller(db):
+    # main loads before starting the task, so a broken stored state crashes the service visibly.
+    class StoppingSource:
+        async def read_snapshot(self, taken_at):
+            raise SystemExit
+
+    await db.save_state(STATE_KEY, {"broken": True})
+    poller = Poller(StoppingSource(), db, RecordingSink(), Thresholds(), interval=0)
+    try:
+        await poller.run()
+    except SystemExit:
+        pass
+    assert poller.state is None

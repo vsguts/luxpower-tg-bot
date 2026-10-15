@@ -67,7 +67,6 @@ class Poller:
         await self._sink.publish(events + detected)
 
     async def run(self) -> None:
-        await self.load()
         loop = asyncio.get_running_loop()
         while True:
             started = loop.time()

@@ -89,12 +89,12 @@ class Debounced:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Debounced":
-        pending_since = data["pending_since"]
+        pending_since = data.get("pending_since")
         return cls(
             value=data["value"],
             since=datetime.fromisoformat(data["since"]),
             pending_since=datetime.fromisoformat(pending_since) if pending_since else None,
-            pending_count=data["pending_count"],
+            pending_count=data.get("pending_count", 0),
         )
 
 
@@ -115,14 +115,15 @@ class State:
             "gen_charged_sent": self.gen_charged_sent,
         }
 
+    # Rows written by an older version lack the newer fields; they start from the defaults.
     @classmethod
     def from_dict(cls, data: dict) -> "State":
         return cls(
             grid=Debounced.from_dict(data["grid"]),
             gen=Debounced.from_dict(data["gen"]),
-            low_sent=data["low_sent"],
-            critical_sent=data["critical_sent"],
-            gen_charged_sent=data["gen_charged_sent"],
+            low_sent=data.get("low_sent", False),
+            critical_sent=data.get("critical_sent", False),
+            gen_charged_sent=data.get("gen_charged_sent", False),
         )
 
 

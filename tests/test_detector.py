@@ -1,5 +1,6 @@
 from lxbot.monitor.detector import (
     Audience,
+    Debounced,
     Event,
     EventType,
     State,
@@ -151,3 +152,11 @@ def test_audience():
 def test_payload():
     event = Event(EventType.GRID_RESTORED, at(4), 70, previous_duration=at(4) - at(0), gen_was_running=True)
     assert event.to_payload() == {"soc": 70, "previous_duration_s": 60, "gen_was_running": True}
+
+
+def test_state_from_an_older_dict_uses_defaults_for_missing_fields():
+    old = {
+        "grid": {"value": False, "since": at(1).isoformat()},
+        "gen": {"value": False, "since": at(0).isoformat()},
+    }
+    assert State.from_dict(old) == State(grid=Debounced(False, at(1)), gen=Debounced(False, at(0)))

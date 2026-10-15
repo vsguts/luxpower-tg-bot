@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -47,6 +48,30 @@ async def poll_telegram(dispatcher: Dispatcher, bot: Bot, retry_delay: float = T
             await asyncio.sleep(retry_delay)
 
 
+# Strong references: the event loop keeps only weak ones to running tasks.
+_shutdowns: set[asyncio.Task] = set()
+
+
+async def _shut_down(dispatcher: Dispatcher, main: asyncio.Task) -> None:
+    try:
+        await dispatcher.stop_polling()
+    except RuntimeError:  # polling has not started yet: still waiting for Telegram
+        main.cancel()
+
+
+def stop_when_ended(dispatcher: Dispatcher, main: asyncio.Task) -> Callable[[asyncio.Task], None]:
+    # A dead poller or notifier must not leave a bot that answers but never alerts: exit and let Docker restart.
+    def on_done(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        log.error("%s stopped unexpectedly, shutting down", task.get_name(), exc_info=task.exception())
+        shutdown = asyncio.create_task(_shut_down(dispatcher, main))
+        _shutdowns.add(shutdown)
+        shutdown.add_done_callback(_shutdowns.discard)
+
+    return on_done
+
+
 async def run(settings: Settings) -> None:
     db = await Database.open(settings.db_path)
     client = DongleClient(settings.dongle)
@@ -55,12 +80,21 @@ async def run(settings: Settings) -> None:
     poller = Poller(client, db, notifier, settings.thresholds, settings.poll_interval)
     dispatcher = Dispatcher(db=db, settings=settings, poller=poller)
     dispatcher.include_router(router)
-    background = [asyncio.create_task(notifier.run()), asyncio.create_task(poller.run())]
+    background: list[asyncio.Task] = []
+    on_done = stop_when_ended(dispatcher, asyncio.current_task())
     try:
+        await poller.load()
+        background = [
+            asyncio.create_task(notifier.run(), name="notifier"),
+            asyncio.create_task(poller.run(), name="poller"),
+        ]
+        for task in background:
+            task.add_done_callback(on_done)
         await wait_for_telegram(bot)
         await poll_telegram(dispatcher, bot)
     finally:
         for task in background:
+            task.remove_done_callback(on_done)
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await client.close()
