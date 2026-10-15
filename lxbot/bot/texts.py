@@ -1,11 +1,14 @@
-from datetime import datetime, timedelta, tzinfo
+from datetime import date, datetime, time, timedelta, tzinfo
 from html import escape
 
 from lxbot.luxpower.registers import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
+from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
+from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import Subscriber, SubscriberStatus
 
 STALE_AFTER = timedelta(minutes=2)
+ON_TIME = timedelta(minutes=2)
 
 STATUS_BUTTON = "📊 Статус"
 REQUEST_SENT = "📨 Запит надіслано адміністратору. Я напишу, щойно його схвалять."
@@ -21,6 +24,14 @@ APPROVED_MARK = "✅ Схвалено"
 REJECTED_MARK = "❌ Відхилено"
 ALREADY_DECIDED = "Запит уже оброблено"
 NOT_FOUND = "Не знайдено"
+SCHEDULE_TOMORROW_PENDING = "⏳ Графік на завтра ще не опубліковано"
+SCHEDULE_SOURCE_UP = "✅ Графік відключень знову оновлюється"
+
+_WEEKDAYS = ("понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя")
+_MONTHS = (
+    "січня", "лютого", "березня", "квітня", "травня", "червня",
+    "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
+)
 
 _STATUS_ICONS = {SubscriberStatus.APPROVED: "✅", SubscriberStatus.PENDING: "⏳", SubscriberStatus.REJECTED: "🚫"}
 
@@ -50,20 +61,108 @@ def _clock(moment: datetime, tz: tzinfo) -> str:
     return moment.astimezone(tz).strftime("%H:%M")
 
 
+# A local-midnight end closes the day it ends, as on DTEK's own schedule: "до 24:00".
+def _range_end(outage: Outage, tz: tzinfo) -> str:
+    end = outage.end.astimezone(tz)
+    if end.time() == time(0) and end.date() > outage.start.astimezone(tz).date():
+        return "24:00"
+    return f"{end:%H:%M}"
+
+
+def format_range(outage: Outage, tz: tzinfo) -> str:
+    return f"з {_clock(outage.start, tz)} до {_range_end(outage, tz)}"
+
+
+def _approx_hours(duration: timedelta) -> str:
+    half_hours = round(duration.total_seconds() / 1800)
+    return f"~{half_hours / 2:g} год"
+
+
+def format_deviation(deviation: timedelta) -> str:
+    if abs(deviation) <= ON_TIME:
+        return "вчасно"
+    direction = "пізніше" if deviation > timedelta() else "раніше"
+    return f"на {format_duration(abs(deviation))} {direction}"
+
+
+def _day_word(moment: datetime, now: datetime, tz: tzinfo) -> str:
+    days = (moment.astimezone(tz).date() - now.astimezone(tz).date()).days
+    return {0: "сьогодні", 1: "завтра"}.get(days, f"{moment.astimezone(tz):%d.%m}")
+
+
+def _upcoming_line(outage: Outage, now: datetime, tz: tzinfo) -> str:
+    kind = "Наступне відключення" if outage.certain else "Можливе відключення"
+    return f"📅 {kind}: {_day_word(outage.start, now, tz)} {format_range(outage, tz)}"
+
+
+def schedule_lines(match: ScheduleMatch, at: datetime, tz: tzinfo) -> list[str]:
+    interval = match.interval
+    if interval is None:
+        lines = ["⚠️ Не за графіком"]
+    else:
+        planned = "За графіком" if interval.certain else "За можливим відключенням"
+        deviation = format_deviation(match.deviation)
+        if match.kind is MatchKind.LOST:
+            lines = [
+                f"⏱ {planned} з {_clock(interval.start, tz)} — {deviation}",
+                f"⏳ Очікуємо світло о {_clock(interval.end, tz)}",
+            ]
+        else:
+            lines = [f"⏱ {planned} до {_range_end(interval, tz)} — {deviation}"]
+    if match.kind is MatchKind.RESTORED:
+        if match.next_outage is None:
+            lines.append("📅 Відключень за графіком більше не заплановано")
+        else:
+            lines.append(_upcoming_line(match.next_outage, at, tz))
+    return lines
+
+
+def _date_title(day: date) -> str:
+    return f"{_WEEKDAYS[day.weekday()]}, {day.day} {_MONTHS[day.month - 1]}"
+
+
+def day_schedule_text(title: str, schedule: DaySchedule, tz: tzinfo, icon: str = "📅") -> str:
+    lines = [f"{icon} <b>{title}</b> · {_date_title(schedule.day)} · черга {schedule.label}"]
+    if not schedule.outages:
+        lines.append("✅ Відключень не заплановано")
+        return "\n".join(lines)
+    for outage in schedule.outages:
+        if outage.certain:
+            lines.append(f"🕐 {format_range(outage, tz)} ({_approx_hours(outage.duration)})")
+        else:
+            lines.append(f"❔ можливо {format_range(outage, tz)}")
+    if schedule.certain_total:
+        lines.append(f"Без світла: {format_duration(schedule.certain_total)}")
+    return "\n".join(lines)
+
+
+def schedule_status_line(schedule: Schedule, now: datetime, tz: tzinfo) -> str:
+    timeline = schedule.timeline()
+    current = current_outage(timeline, now)
+    if current is not None:
+        prefix = "📅 За графіком світла немає до " if current.certain else "📅 Можливе відключення до "
+        return prefix + _range_end(current, tz)
+    upcoming = next_outage(timeline, now)
+    if upcoming is None:
+        return "📅 Відключень за графіком не заплановано"
+    return _upcoming_line(upcoming, now, tz)
+
+
 def event_text(event: Event, tz: tzinfo) -> str | None:
-    time = _clock(event.at, tz)
+    clock = _clock(event.at, tz)
     match event.type:
         case EventType.GRID_LOST:
-            return (
-                f"🔴 <b>{time} Світло зникло</b>\n"
+            text = (
+                f"🔴 <b>{clock} Світло зникло</b>\n"
                 f"🕓 Воно було {format_duration(event.previous_duration)}\n"
                 f"🔋 Заряд {event.soc}%"
             )
+            return _with_schedule(text, event, tz)
         case EventType.GRID_RESTORED:
-            text = f"🟢 <b>{time} Світло з'явилось</b>\n🕓 Його не було {format_duration(event.previous_duration)}"
+            text = f"🟢 <b>{clock} Світло з'явилось</b>\n🕓 Його не було {format_duration(event.previous_duration)}"
             if event.gen_was_running:
                 text += "\n⛽ Генератор можна вимикати"
-            return text
+            return _with_schedule(text, event, tz)
         case EventType.BATTERY_LOW:
             return f"🪫 <b>Залишилось {event.soc}%</b>\n⛽ Час заводити генератор"
         case EventType.BATTERY_CRITICAL:
@@ -71,16 +170,40 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
         case EventType.GEN_CHARGED:
             return f"🔋 <b>Заряджено {event.soc}%</b>\n⛽ Генератор можна вимикати"
         case EventType.DONGLE_DOWN:
-            return f"⚠️ Немає зв'язку з інвертором з {time}"
+            return f"⚠️ Немає зв'язку з інвертором з {clock}"
         case EventType.DONGLE_UP:
-            return f"✅ Зв'язок з інвертором відновлено о {time}"
+            return f"✅ Зв'язок з інвертором відновлено о {clock}"
+        case EventType.SCHEDULE_TODAY:
+            return day_schedule_text("Графік на сьогодні", event.schedule, tz)
+        case EventType.SCHEDULE_TOMORROW:
+            return day_schedule_text("Графік на завтра", event.schedule, tz)
+        case EventType.SCHEDULE_TOMORROW_PUBLISHED:
+            return day_schedule_text("Графік на завтра опубліковано", event.schedule, tz)
+        case EventType.SCHEDULE_TOMORROW_PENDING:
+            return SCHEDULE_TOMORROW_PENDING
+        case EventType.SCHEDULE_CHANGED:
+            word = _day_word(datetime.combine(event.schedule.day, time(12), tz), event.at, tz)
+            return day_schedule_text(f"Графік на {word} змінився", event.schedule, tz, icon="🔄")
+        case EventType.SCHEDULE_SOURCE_DOWN:
+            return f"⚠️ Графік відключень не оновлюється з {clock}"
+        case EventType.SCHEDULE_SOURCE_UP:
+            return SCHEDULE_SOURCE_UP
         case _:
             return None
 
 
-def status_text(snapshot: Snapshot | None, state: State | None, now: datetime, tz: tzinfo) -> str:
+def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:
+    if event.match is None:
+        return text
+    return "\n".join([text, *schedule_lines(event.match, event.at, tz)])
+
+
+def status_text(
+    snapshot: Snapshot | None, state: State | None, now: datetime, tz: tzinfo, schedule: Schedule | None = None
+) -> str:
+    schedule_line = schedule_status_line(schedule, now, tz) if schedule is not None else None
     if snapshot is None or state is None:
-        return NO_DATA
+        return f"{NO_DATA}\n{schedule_line}" if schedule_line else NO_DATA
     if state.grid.value:
         grid = f"є · {snapshot.grid_v:.0f} В"
     else:
@@ -100,8 +223,10 @@ def status_text(snapshot: Snapshot | None, state: State | None, now: datetime, t
         f"🔋 Батарея: {snapshot.soc}%{flow}",
         f"🏠 Споживання: {format_power(snapshot.load_w)}",
         f"☀️ Сонце: {format_power(snapshot.pv_w)}",
-        f"🕐 Оновлено {snapshot.taken_at.astimezone(tz):%H:%M:%S}",
     ]
+    if schedule_line:
+        lines.append(schedule_line)
+    lines.append(f"🕐 Оновлено {snapshot.taken_at.astimezone(tz):%H:%M:%S}")
     if now - snapshot.taken_at > STALE_AFTER:
         lines.append("⚠️ Дані застарілі: немає зв'язку з інвертором")
     return "\n".join(lines)
