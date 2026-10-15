@@ -24,6 +24,9 @@ REFRESH_BEFORE_DIGEST = timedelta(minutes=15)
 DIGEST_RETRY = timedelta(minutes=5)
 SOURCE_MAX_AGE = timedelta(hours=1)
 SOURCE_DOWN_AFTER = timedelta(hours=1)
+# Every 304 moves fetched_at; writing it each time wears the microSD card. A restart may then see it up
+# to this much older, which the 6 h staleness limit absorbs.
+FETCHED_AT_SAVE_STEP = timedelta(hours=1)
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,9 @@ class ScheduleService:
         self._parse_failed = False
         self._failing_since: datetime | None = None
         self._down_reported = False
+        self._saved_schedule: dict | None = None
+        self._saved_fetched_at: datetime | None = None
+        self._saved_digests = self._digests.to_dict()
 
     @property
     def config(self) -> ScheduleConfig:
@@ -113,9 +119,11 @@ class ScheduleService:
                 source_updated=_optional_time(stored["source_updated"]),
             )
             self._fetched_at = datetime.fromisoformat(stored["fetched_at"])
+            self._saved_schedule, self._saved_fetched_at = self._schedule_row(), self._fetched_at
         digests = await self._db.load_state(DIGESTS_KEY)
         if digests:
             self._digests = _Digests.from_dict(digests)
+            self._saved_digests = self._digests.to_dict()
         health = await self._db.load_state(HEALTH_KEY)
         if health:
             self._failing_since = _optional_time(health["failing_since"])
@@ -287,21 +295,35 @@ class ScheduleService:
             else:
                 self._digests.pending = None
                 event = Event(EventType.SCHEDULE_TOMORROW, now, schedule=schedule)
-        await self._db.save_state(DIGESTS_KEY, self._digests.to_dict())
+        await self._save_digests()
         return [event]
 
     async def _save(self) -> None:
-        if self._schedule is not None:
-            schedule = self._schedule
-            await self._db.save_state(
-                SCHEDULE_KEY,
-                {
-                    "group": schedule.group,
-                    "days": [d.to_dict() for d in schedule.days.values()],
-                    "dtek_updated": schedule.dtek_updated.isoformat() if schedule.dtek_updated else None,
-                    "source_ok": schedule.source_ok,
-                    "source_updated": schedule.source_updated.isoformat() if schedule.source_updated else None,
-                    "fetched_at": self._fetched_at.isoformat(),
-                },
-            )
-        await self._db.save_state(DIGESTS_KEY, self._digests.to_dict())
+        await self._save_schedule()
+        await self._save_digests()
+
+    def _schedule_row(self) -> dict:
+        schedule = self._schedule
+        return {
+            "group": schedule.group,
+            "days": [d.to_dict() for d in schedule.days.values()],
+            "dtek_updated": schedule.dtek_updated.isoformat() if schedule.dtek_updated else None,
+            "source_ok": schedule.source_ok,
+            "source_updated": schedule.source_updated.isoformat() if schedule.source_updated else None,
+        }
+
+    async def _save_schedule(self) -> None:
+        if self._schedule is None:
+            return
+        row = self._schedule_row()
+        lagging = self._saved_fetched_at is None or self._fetched_at - self._saved_fetched_at >= FETCHED_AT_SAVE_STEP
+        if row == self._saved_schedule and not lagging:
+            return
+        await self._db.save_state(SCHEDULE_KEY, row | {"fetched_at": self._fetched_at.isoformat()})
+        self._saved_schedule, self._saved_fetched_at = row, self._fetched_at
+
+    async def _save_digests(self) -> None:
+        digests = self._digests.to_dict()
+        if digests != self._saved_digests:
+            await self._db.save_state(DIGESTS_KEY, digests)
+            self._saved_digests = digests

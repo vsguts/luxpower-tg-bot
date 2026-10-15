@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from lxbot.monitor.detector import EventType
 from lxbot.schedule.model import Outage
-from lxbot.schedule.service import ScheduleConfig, ScheduleService
+from lxbot.schedule.service import DIGESTS_KEY, SCHEDULE_KEY, ScheduleConfig, ScheduleService
 from lxbot.schedule.source import ScheduleSourceError
 from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local, make_document
 
@@ -399,3 +399,26 @@ async def test_source_down_names_the_time_the_data_stopped(db):
     await service.tick(at(11, 1))
     assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
     assert sink.events[1].at == at(9, 0)
+
+
+async def test_not_modified_ticks_rarely_write_to_the_card(db, monkeypatch):
+    writes = []
+    save_state = db.save_state
+
+    async def counting_save_state(key, value):
+        writes.append(key)
+        await save_state(key, value)
+
+    monkeypatch.setattr(db, "save_state", counting_save_state)
+    service, _, _ = await make_service(db, DOC, None)
+    await tick_through(service, at(9, 0), at(11, 30))
+    assert writes.count(SCHEDULE_KEY) <= 3
+    assert writes.count(DIGESTS_KEY) == 1
+
+
+async def test_restart_keeps_the_fetch_time_within_an_hour(db):
+    first, _, _ = await make_service(db, DOC, None)
+    await tick_through(first, at(9, 0), at(9, 45))
+    second, _, _ = await make_service(db, ScheduleSourceError("down"))
+    assert second.current(at(15, 0)) is not None
+    assert second.current(at(15, 1)) is None
