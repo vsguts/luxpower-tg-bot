@@ -132,7 +132,8 @@ garbled block) and counts as a failed poll, so a glitch never triggers a battery
 Pure function `detect(state, snapshot) -> (state, events)`; `State` is persisted after every poll.
 
 **Debounce.** A boolean (`grid_present`, `gen_running`) changes only after 3 consecutive polls agree
-(about 45 s at a 15 s interval). The event time is the first of those polls.
+(about 45 s at a 15 s interval). The event time is the first of those polls. A streak older than
+2 minutes (a restart or a dongle outage in between) starts over at the current poll.
 
 | Event | Condition | Sent to |
 |-------|-----------|---------|

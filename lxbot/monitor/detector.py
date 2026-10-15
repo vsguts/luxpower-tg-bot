@@ -62,6 +62,7 @@ class Thresholds:
     rearm_margin: int = 5
     confirm_polls: int = 3
     battery_confirm_polls: int = 2
+    max_streak_age: timedelta = timedelta(minutes=2)
 
 
 @dataclass(frozen=True)
@@ -71,11 +72,14 @@ class Debounced:
     pending_since: datetime | None = None
     pending_count: int = 0
 
-    def observe(self, observed: bool, at: datetime, confirm_polls: int) -> "Debounced":
+    def observe(self, observed: bool, at: datetime, confirm_polls: int, max_streak_age: timedelta) -> "Debounced":
         if observed == self.value:
             return Debounced(self.value, self.since)
-        pending_since = self.pending_since or at
-        pending_count = self.pending_count + 1
+        # A streak broken by a restart or a dongle outage says nothing about the time in between.
+        if self.pending_since is None or at - self.pending_since > max_streak_age:
+            pending_since, pending_count = at, 1
+        else:
+            pending_since, pending_count = self.pending_since, self.pending_count + 1
         if pending_count >= confirm_polls:
             return Debounced(observed, pending_since)
         return Debounced(self.value, self.since, pending_since, pending_count)
@@ -154,8 +158,9 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
     soc = snapshot.soc
     events: list[Event] = []
     grid_observed = snapshot.grid_present_given(state.grid.value)
-    grid = state.grid.observe(grid_observed, snapshot.taken_at, thresholds.confirm_polls)
-    gen = state.gen.observe(snapshot.gen_running, snapshot.taken_at, thresholds.confirm_polls)
+    at = snapshot.taken_at
+    grid = state.grid.observe(grid_observed, at, thresholds.confirm_polls, thresholds.max_streak_age)
+    gen = state.gen.observe(snapshot.gen_running, at, thresholds.confirm_polls, thresholds.max_streak_age)
     new = replace(state, grid=grid, gen=gen)
 
     if grid.value != state.grid.value:
@@ -177,21 +182,21 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
         new = replace(new, critical_sent=False)
 
     on_battery = not grid.value and not gen.value
-    confirm = thresholds.battery_confirm_polls
+    battery_confirm = thresholds.battery_confirm_polls
     new = replace(
         new,
-        low_streak=_streak(new.low_streak, on_battery and soc <= thresholds.soc_low, confirm),
-        critical_streak=_streak(new.critical_streak, on_battery and soc <= thresholds.soc_critical, confirm),
+        low_streak=_streak(new.low_streak, on_battery and soc <= thresholds.soc_low, battery_confirm),
+        critical_streak=_streak(new.critical_streak, on_battery and soc <= thresholds.soc_critical, battery_confirm),
     )
-    if new.critical_streak >= confirm and not new.critical_sent:
-        events.append(Event(EventType.BATTERY_CRITICAL, snapshot.taken_at, soc))
+    if new.critical_streak >= battery_confirm and not new.critical_sent:
+        events.append(Event(EventType.BATTERY_CRITICAL, at, soc))
         new = replace(new, critical_sent=True, low_sent=True)
-    elif new.low_streak >= confirm and not new.low_sent:
-        events.append(Event(EventType.BATTERY_LOW, snapshot.taken_at, soc))
+    elif new.low_streak >= battery_confirm and not new.low_sent:
+        events.append(Event(EventType.BATTERY_LOW, at, soc))
         new = replace(new, low_sent=True)
 
     if gen.value and not grid.value and soc >= thresholds.soc_gen_full and not new.gen_charged_sent:
-        events.append(Event(EventType.GEN_CHARGED, snapshot.taken_at, soc))
+        events.append(Event(EventType.GEN_CHARGED, at, soc))
         new = replace(new, gen_charged_sent=True)
 
     return new, events

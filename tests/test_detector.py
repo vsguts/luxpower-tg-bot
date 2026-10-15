@@ -66,6 +66,13 @@ def test_grid_returns_only_above_the_restore_voltage():
     assert types(events) == [EventType.GRID_RESTORED]
 
 
+def test_a_streak_interrupted_by_a_gap_starts_over():
+    state, events = run([make_snapshot(0)] + polls(1, 2, grid=False) + [make_snapshot(241, grid=False)])
+    assert events == []
+    _, events = run(polls(242, 2, grid=False), state)
+    assert events == [Event(EventType.GRID_LOST, at(241), 80, previous_duration=at(241) - at(0))]
+
+
 def test_restore_while_generator_runs_says_generator_can_stop():
     snapshots = (
         [make_snapshot(0)]
