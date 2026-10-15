@@ -81,8 +81,9 @@ wiki "TCP Packet Spec").
 - Cloud traffic and heartbeats share the socket. Before each request, drain pending bytes; accept
   only a reply whose `tcp_func`, function, inverter serial and start register match the request;
   skip everything else until the timeout.
-- Timeout 5 s per request. On error or timeout, close the socket and reconnect with exponential
-  backoff (1 s up to 60 s).
+- Timeout 5 s per request. On error or timeout, close the socket; the next poll reconnects, so the
+  poll interval (15 s) is the reconnect backoff.
+- A frame with a bad CRC or an implausible length is skipped, not fatal.
 - Read-only: the client has no write function.
 
 ## Register map (input registers, func 0x04)
@@ -122,6 +123,9 @@ Derived:
 
 Thresholds are named constants; calibration may change which signal wins.
 
+A snapshot with battery voltage below 30 V or SOC above 100 is rejected as invalid (an empty or
+garbled block) and counts as a failed poll, so a glitch never triggers a battery alert.
+
 ## Detector
 
 Pure function `detect(state, snapshot) -> (state, events)`; `State` is persisted after every poll.
@@ -141,7 +145,8 @@ Pure function `detect(state, snapshot) -> (state, events)`; `State` is persisted
 
 - If the battery is already below a threshold when the grid is lost, that alert fires once right after
   `GRID_LOST`; when both thresholds are crossed at once, only `BATTERY_CRITICAL` is sent.
-- First start (no stored state): initialise silently from the first debounced snapshot.
+- First start (no stored state): grid and generator state are taken from the first snapshot without
+  an event; battery alerts already apply to that snapshot.
 - After a restart: continue from the stored state; a change that happened while the bot was down is
   reported once, with the time the bot noticed it.
 - While the dongle is down the detector does nothing; it never reports a grid change from missing data.
