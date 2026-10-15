@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, timedelta
 
 import pytest
@@ -157,6 +158,30 @@ def test_tomorrow_pending_and_published():
     )
     assert published.splitlines()[0] == "📅 <b>Графік на завтра опубліковано</b> · пʼятниця, 16 жовтня · черга 3.2"
 
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        EventType.SCHEDULE_TODAY,
+        EventType.SCHEDULE_TOMORROW,
+        EventType.SCHEDULE_TOMORROW_PUBLISHED,
+        EventType.SCHEDULE_CHANGED,
+    ],
+)
+def test_digest_from_an_unhealthy_source_warns_about_its_age(event_type):
+    updated = local(2026, 10, 15, 7, 5).astimezone(UTC)
+    event = Event(event_type, local(2026, 10, 15, 21), schedule=TODAY_SCHEDULE, source_updated=updated)
+    lines = texts.event_text(event, KYIV).splitlines()
+    assert lines[-1] == "⚠️ Дані могли застаріти: джерело оновлювалось 15.10 07:05"
+    assert lines[:-1] == texts.event_text(replace(event, source_updated=None), KYIV).splitlines()
+
+
+def test_payload_includes_source_updated_only_when_set():
+    digest = Event(EventType.SCHEDULE_TODAY, local(2026, 10, 15, 9), schedule=TODAY_SCHEDULE)
+    assert "source_updated" not in digest.to_payload()
+    stale = replace(digest, source_updated=local(2026, 10, 15, 7, 5))
+    assert stale.to_payload()["source_updated"] == local(2026, 10, 15, 7, 5).isoformat()
 
 @pytest.mark.parametrize(("day", "word"), [(TODAY, "сьогодні"), (TOMORROW, "завтра")])
 def test_changed_notice(day, word):

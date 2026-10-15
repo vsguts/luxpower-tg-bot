@@ -320,3 +320,60 @@ async def test_source_down_is_remembered_across_a_restart(db):
     third, third_sink, _ = await make_service(db, DOC)
     await third.tick(at(10, 30))
     assert types(third_sink) == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TODAY]
+
+
+async def tick_through(service, start, end, step=timedelta(minutes=15)):
+    moment = start
+    while moment <= end:
+        await service.tick(moment)
+        moment += step
+
+
+async def test_frozen_source_is_not_presented_as_current(db):
+    # Updated at 09:00 local, then only 304s: fetched_at stays fresh while the data ages.
+    frozen = make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF}, last_updated=datetime(2026, 10, 15, 6, tzinfo=UTC))
+    service, sink, _ = await make_service(db, frozen, None)
+    await tick_through(service, at(8, 0), at(16, 0))
+    assert service.current(at(16, 0)) is not None
+    await tick_through(service, at(16, 15), at(12, 0, day=17))
+    assert service.current(at(16, 15)) is None
+    assert service.current(at(10, 0, day=17)) is None
+    assert types(sink) == [
+        EventType.SCHEDULE_TODAY,
+        EventType.SCHEDULE_SOURCE_DOWN,
+        EventType.SCHEDULE_TOMORROW,
+        EventType.SCHEDULE_TODAY,
+    ]
+    healthy_digest, _, *stale_digests = sink.events
+    assert healthy_digest.source_updated is None
+    assert [e.source_updated for e in stale_digests] == [at(9, 0), at(9, 0)]
+
+
+async def test_schedule_without_today_is_not_current(db):
+    service, _, _ = await make_service(db, make_document({TOMORROW: TOMORROW_OFF}))
+    await service.tick(at(20, 0))
+    assert service.current(at(20, 0)) is None
+    assert service.current(at(0, 30, day=16)) is not None
+
+
+async def test_unhealthy_source_without_tomorrow_sends_the_evening_digest_once_it_recovers(db):
+    down = ScheduleSourceError("down")
+    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, *[down] * 7, DOC)
+    await tick_through(service, at(19, 45), at(21, 30))
+    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
+    await tick_through(service, at(21, 45), at(22, 0))
+    assert types(sink)[2:] == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TOMORROW]
+    assert sink.events[-1].source_updated is None
+
+
+async def test_change_notice_from_an_unhealthy_source_carries_its_age(db):
+    stale_change = make_document(
+        {TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}, TOMORROW: TOMORROW_OFF},
+        last_updated=datetime(2026, 10, 15, 4, tzinfo=UTC),
+    )
+    service, sink, _ = await make_service(db, DOC, stale_change)
+    await service.tick(at(9, 0))
+    await service.tick(at(9, 15))
+    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
+    assert sink.events[0].source_updated is None
+    assert sink.events[1].source_updated == at(7, 0)

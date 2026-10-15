@@ -174,22 +174,29 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
         case EventType.DONGLE_UP:
             return f"✅ Зв'язок з інвертором відновлено о {clock}"
         case EventType.SCHEDULE_TODAY:
-            return day_schedule_text("Графік на сьогодні", event.schedule, tz)
+            return _digest_text("Графік на сьогодні", event, tz)
         case EventType.SCHEDULE_TOMORROW:
-            return day_schedule_text("Графік на завтра", event.schedule, tz)
+            return _digest_text("Графік на завтра", event, tz)
         case EventType.SCHEDULE_TOMORROW_PUBLISHED:
-            return day_schedule_text("Графік на завтра опубліковано", event.schedule, tz)
+            return _digest_text("Графік на завтра опубліковано", event, tz)
         case EventType.SCHEDULE_TOMORROW_PENDING:
             return SCHEDULE_TOMORROW_PENDING
         case EventType.SCHEDULE_CHANGED:
             word = _day_word(datetime.combine(event.schedule.day, time(12), tz), event.at, tz)
-            return day_schedule_text(f"Графік на {word} змінився", event.schedule, tz, icon="🔄")
+            return _digest_text(f"Графік на {word} змінився", event, tz, icon="🔄")
         case EventType.SCHEDULE_SOURCE_DOWN:
             return f"⚠️ Графік відключень не оновлюється з {clock}"
         case EventType.SCHEDULE_SOURCE_UP:
             return SCHEDULE_SOURCE_UP
         case _:
             return None
+
+
+def _digest_text(title: str, event: Event, tz: tzinfo, icon: str = "📅") -> str:
+    text = day_schedule_text(title, event.schedule, tz, icon)
+    if event.source_updated is None:
+        return text
+    return f"{text}\n⚠️ Дані могли застаріти: джерело оновлювалось {event.source_updated.astimezone(tz):%d.%m %H:%M}"
 
 
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:

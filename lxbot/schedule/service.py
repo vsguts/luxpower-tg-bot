@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -91,9 +91,16 @@ class ScheduleService:
         return self._config
 
     def current(self, now: datetime) -> Schedule | None:
-        if self._schedule is None or self._fetched_at is None or now - self._fetched_at > SCHEDULE_STALE_AFTER:
+        schedule = self._schedule
+        if schedule is None or self._fetched_at is None or now - self._fetched_at > SCHEDULE_STALE_AFTER:
             return None
-        return self._schedule
+        # A frozen source keeps answering 304 or the same document, so fetched_at alone never ages out.
+        if self._failing_since is not None and now - self._failing_since >= SCHEDULE_STALE_AFTER:
+            return None
+        # Without today every grid change would read "not on schedule" and /status "nothing planned".
+        if schedule.day(self._local(now).date()) is None:
+            return None
+        return schedule
 
     async def load(self) -> None:
         stored = await self._db.load_state(SCHEDULE_KEY)
@@ -128,8 +135,16 @@ class ScheduleService:
             events += await self._refresh(now)
         events += await self._health_events(now)
         events += await self._digest_events(now)
+        events = self._with_source_age(events)
         if events:
             await self._sink.publish(events)
+
+    # Digests and change notices still go out while the source is unhealthy, but say how old the data may be.
+    def _with_source_age(self, events: list[Event]) -> list[Event]:
+        if self._failing_since is None or self._schedule is None:
+            return events
+        updated = self._schedule.source_updated or self._fetched_at
+        return [replace(e, source_updated=updated) if e.schedule is not None else e for e in events]
 
     def _local(self, now: datetime) -> datetime:
         return now.astimezone(self._tz)
@@ -248,6 +263,10 @@ class ScheduleService:
         else:
             tomorrow = today + timedelta(days=1)
             schedule = self._schedule.day(tomorrow)
+            # An unhealthy source may just have missed the publication: keep the digest due until midnight
+            # rather than tell the family it is not out yet.
+            if schedule is None and self._failing_since is not None:
+                return []
             self._digests.tomorrow = tomorrow
             if schedule is None:
                 self._digests.pending = tomorrow

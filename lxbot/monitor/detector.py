@@ -53,6 +53,7 @@ class Event:
     gen_was_running: bool = False
     schedule: DaySchedule | None = None
     match: ScheduleMatch | None = None
+    source_updated: datetime | None = None
 
     @property
     def audience(self) -> Audience:
@@ -69,6 +70,8 @@ class Event:
             payload["schedule"] = self.schedule.to_dict()
         if self.match is not None:
             payload["match"] = self.match.to_payload()
+        if self.source_updated is not None:
+            payload["source_updated"] = self.source_updated.isoformat()
         return payload
 
 
