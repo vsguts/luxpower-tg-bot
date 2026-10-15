@@ -46,6 +46,26 @@ def test_flapping_under_the_debounce_is_ignored():
     assert events == []
 
 
+def test_grid_sagging_above_the_hold_voltage_stays_present():
+    voltages = [175, 178, 176, 190, 175, 177, 179, 185]
+    _, events = run([make_snapshot(0)] + [make_snapshot(i + 1, grid_v=v) for i, v in enumerate(voltages)])
+    assert events == []
+
+
+def test_grid_below_the_hold_voltage_is_lost():
+    _, events = run([make_snapshot(0)] + polls(1, 3, grid_v=165.0))
+    assert types(events) == [EventType.GRID_LOST]
+
+
+def test_grid_returns_only_above_the_restore_voltage():
+    weak = polls(1, 3, grid_v=175.0)
+    state, events = run([make_snapshot(0, grid=False)] + weak)
+    assert events == []
+    assert state.grid.value is False
+    _, events = run(polls(4, 3, grid_v=185.0), state)
+    assert types(events) == [EventType.GRID_RESTORED]
+
+
 def test_restore_while_generator_runs_says_generator_can_stop():
     snapshots = (
         [make_snapshot(0)]

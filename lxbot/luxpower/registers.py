@@ -13,6 +13,8 @@ BLOCK_SIZE = 40
 INPUT_BLOCKS = (0, 40, 120, 160)
 
 MIN_AC_VOLTAGE = 180.0
+# Hysteresis: a sagging feeder hovering around 180 V would otherwise flap between lost and restored.
+GRID_HOLD_VOLTAGE = 170.0
 MIN_AC_FREQUENCY = 45.0
 # A 48 V pack never reads this low; such values mean the dongle sent an empty block.
 MIN_BATTERY_VOLTAGE = 30.0
@@ -80,7 +82,11 @@ class Snapshot:
 
     @property
     def grid_present(self) -> bool:
-        return self.grid_v > MIN_AC_VOLTAGE and self.grid_hz > MIN_AC_FREQUENCY
+        return self.grid_present_given(currently_present=False)
+
+    def grid_present_given(self, currently_present: bool) -> bool:
+        min_voltage = GRID_HOLD_VOLTAGE if currently_present else MIN_AC_VOLTAGE
+        return self.grid_v > min_voltage and self.grid_hz > MIN_AC_FREQUENCY
 
     @property
     def ac_input_present(self) -> bool:

@@ -153,7 +153,8 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
         state = initial_state(snapshot)
     soc = snapshot.soc
     events: list[Event] = []
-    grid = state.grid.observe(snapshot.grid_present, snapshot.taken_at, thresholds.confirm_polls)
+    grid_observed = snapshot.grid_present_given(state.grid.value)
+    grid = state.grid.observe(grid_observed, snapshot.taken_at, thresholds.confirm_polls)
     gen = state.gen.observe(snapshot.gen_running, snapshot.taken_at, thresholds.confirm_polls)
     new = replace(state, grid=grid, gen=gen)
 

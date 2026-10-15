@@ -117,7 +117,8 @@ calibration before the detector relies on it.
 
 Derived:
 
-- `grid_present = grid_v > 180 and grid_hz > 45`
+- `grid_present = grid_v > 180 and grid_hz > 45`; the detector keeps a present grid down to 170 V
+  (hysteresis against a sagging feeder)
 - `ac_input_present = status in {0x11, 0x19, 0x20, 0x28}` (bypass or AC charge)
 - `gen_running = (gen_v > 180 and gen_hz > 45) or (ac_source_gen and ac_input_present)`
 
