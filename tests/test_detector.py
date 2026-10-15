@@ -67,38 +67,55 @@ def test_restore_without_generator():
     assert events[-1].gen_was_running is False
 
 
+def off_grid(socs):
+    return [make_snapshot(i, grid=False, soc=s) for i, s in enumerate(socs)]
+
+
 def test_low_battery_fires_once_and_rearms():
-    socs = [31, 30, 29, 35, 30]
-    _, events = run([make_snapshot(i, grid=False, soc=s) for i, s in enumerate(socs)])
+    _, events = run(off_grid([31, 30, 29, 28, 35, 30, 30]))
     assert events == [
-        Event(EventType.BATTERY_LOW, at(1), 30),
-        Event(EventType.BATTERY_LOW, at(4), 30),
+        Event(EventType.BATTERY_LOW, at(2), 29),
+        Event(EventType.BATTERY_LOW, at(6), 30),
     ]
 
 
+def test_a_single_bad_soc_reading_sends_nothing():
+    _, events = run(off_grid([60, 0, 60]))
+    assert events == []
+
+
+def test_low_battery_needs_two_polls_in_a_row():
+    _, events = run(off_grid([31, 30, 30]))
+    assert events == [Event(EventType.BATTERY_LOW, at(2), 30)]
+
+
 def test_crossing_both_thresholds_sends_only_critical():
-    socs = [40, 14, 13, 19]
-    _, events = run([make_snapshot(i, grid=False, soc=s) for i, s in enumerate(socs)])
-    assert events == [Event(EventType.BATTERY_CRITICAL, at(1), 14)]
+    _, events = run(off_grid([40, 14, 13, 19]))
+    assert events == [Event(EventType.BATTERY_CRITICAL, at(2), 13)]
 
 
 def test_critical_rearms_at_twenty():
-    socs = [16, 15, 20, 15]
-    _, events = run([make_snapshot(i, grid=False, soc=s) for i, s in enumerate(socs)])
-    assert types(events) == [EventType.BATTERY_LOW, EventType.BATTERY_CRITICAL, EventType.BATTERY_CRITICAL]
+    _, events = run(off_grid([16, 15, 15, 20, 15, 15]))
+    assert [(e.type, e.at) for e in events] == [
+        (EventType.BATTERY_LOW, at(1)),
+        (EventType.BATTERY_CRITICAL, at(2)),
+        (EventType.BATTERY_CRITICAL, at(5)),
+    ]
 
 
 def test_battery_already_low_when_the_grid_goes():
-    _, events = run([make_snapshot(0, soc=25)] + polls(1, 3, grid=False, soc=25))
+    _, events = run([make_snapshot(0, soc=25)] + polls(1, 4, grid=False, soc=25))
     assert events == [
         Event(EventType.GRID_LOST, at(1), 25, previous_duration=at(1) - at(0)),
-        Event(EventType.BATTERY_LOW, at(3), 25),
+        Event(EventType.BATTERY_LOW, at(4), 25),
     ]
 
 
 def test_first_start_off_grid_with_low_battery_alerts():
-    _, events = run([make_snapshot(0, grid=False, soc=20)])
-    assert types(events) == [EventType.BATTERY_LOW]
+    _, first = run(polls(0, 1, grid=False, soc=20))
+    _, both = run(polls(0, 2, grid=False, soc=20))
+    assert first == []
+    assert both == [Event(EventType.BATTERY_LOW, at(1), 20)]
 
 
 def test_no_low_alert_while_generator_runs():
@@ -133,6 +150,18 @@ def test_state_round_trips_through_a_dict():
     state, _ = run([make_snapshot(0)] + polls(1, 2, grid=False))
     assert state.grid.pending_count == 2
     assert State.from_dict(state.to_dict()) == state
+
+
+def test_battery_streaks_round_trip_through_a_dict():
+    state, _ = run(off_grid([14]))
+    assert (state.low_streak, state.critical_streak) == (1, 1)
+    assert State.from_dict(state.to_dict()) == state
+
+
+def test_battery_streak_stops_growing_once_confirmed():
+    # Capped so a long low-battery night does not rewrite the stored state on every poll.
+    state, _ = run(off_grid([25] * 5))
+    assert state.low_streak == T.battery_confirm_polls
 
 
 def test_restart_continues_from_stored_state():

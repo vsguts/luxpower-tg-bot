@@ -61,6 +61,7 @@ class Thresholds:
     soc_gen_full: int = 90
     rearm_margin: int = 5
     confirm_polls: int = 3
+    battery_confirm_polls: int = 2
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,8 @@ class State:
     low_sent: bool = False
     critical_sent: bool = False
     gen_charged_sent: bool = False
+    low_streak: int = 0
+    critical_streak: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +116,8 @@ class State:
             "low_sent": self.low_sent,
             "critical_sent": self.critical_sent,
             "gen_charged_sent": self.gen_charged_sent,
+            "low_streak": self.low_streak,
+            "critical_streak": self.critical_streak,
         }
 
     # Rows written by an older version lack the newer fields; they start from the defaults.
@@ -124,6 +129,8 @@ class State:
             low_sent=data.get("low_sent", False),
             critical_sent=data.get("critical_sent", False),
             gen_charged_sent=data.get("gen_charged_sent", False),
+            low_streak=data.get("low_streak", 0),
+            critical_streak=data.get("critical_streak", 0),
         )
 
 
@@ -132,6 +139,13 @@ def initial_state(snapshot: Snapshot) -> State:
         grid=Debounced(snapshot.grid_present, snapshot.taken_at),
         gen=Debounced(snapshot.gen_running, snapshot.taken_at),
     )
+
+
+# One garbled SOC reading (60 -> 0 -> 60) must not raise an alarm, so a battery alert needs a streak.
+# The streak is capped at the confirmation count: the stored state then stays unchanged on every poll
+# of a long low-battery night, and the microSD card is spared a write each time.
+def _streak(current: int, below: bool, confirm: int) -> int:
+    return min(current + 1, confirm) if below else 0
 
 
 def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> tuple[State, list[Event]]:
@@ -161,13 +175,19 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
     if soc >= thresholds.soc_critical + thresholds.rearm_margin:
         new = replace(new, critical_sent=False)
 
-    if not grid.value and not gen.value:
-        if soc <= thresholds.soc_critical and not new.critical_sent:
-            events.append(Event(EventType.BATTERY_CRITICAL, snapshot.taken_at, soc))
-            new = replace(new, critical_sent=True, low_sent=True)
-        elif soc <= thresholds.soc_low and not new.low_sent:
-            events.append(Event(EventType.BATTERY_LOW, snapshot.taken_at, soc))
-            new = replace(new, low_sent=True)
+    on_battery = not grid.value and not gen.value
+    confirm = thresholds.battery_confirm_polls
+    new = replace(
+        new,
+        low_streak=_streak(new.low_streak, on_battery and soc <= thresholds.soc_low, confirm),
+        critical_streak=_streak(new.critical_streak, on_battery and soc <= thresholds.soc_critical, confirm),
+    )
+    if new.critical_streak >= confirm and not new.critical_sent:
+        events.append(Event(EventType.BATTERY_CRITICAL, snapshot.taken_at, soc))
+        new = replace(new, critical_sent=True, low_sent=True)
+    elif new.low_streak >= confirm and not new.low_sent:
+        events.append(Event(EventType.BATTERY_LOW, snapshot.taken_at, soc))
+        new = replace(new, low_sent=True)
 
     if gen.value and not grid.value and soc >= thresholds.soc_gen_full and not new.gen_charged_sent:
         events.append(Event(EventType.GEN_CHARGED, snapshot.taken_at, soc))

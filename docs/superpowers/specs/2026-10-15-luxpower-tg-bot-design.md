@@ -143,10 +143,12 @@ Pure function `detect(state, snapshot) -> (state, events)`; `State` is persisted
 | `GEN_STARTED` / `GEN_STOPPED` | generator 0 <-> 1 | journal only |
 | `DONGLE_DOWN` / `DONGLE_UP` | no valid snapshot for 5 min / first one after that | admin only |
 
-- If the battery is already below a threshold when the grid is lost, that alert fires once right after
-  `GRID_LOST`; when both thresholds are crossed at once, only `BATTERY_CRITICAL` is sent.
+- A battery alert needs 2 consecutive polls at or below its threshold (no grid, generator off), so a
+  single garbled SOC reading sends nothing; the event carries the confirming poll's time and SOC.
+- If the battery is already below a threshold when the grid is lost, that alert fires once, one poll
+  after `GRID_LOST`; when both thresholds are crossed at once, only `BATTERY_CRITICAL` is sent.
 - First start (no stored state): grid and generator state are taken from the first snapshot without
-  an event; battery alerts already apply to that snapshot.
+  an event; battery alerts already count that snapshot.
 - After a restart: continue from the stored state; a change that happened while the bot was down is
   reported once, with the time the bot noticed it.
 - While the dongle is down the detector does nothing; it never reports a grid change from missing data.
