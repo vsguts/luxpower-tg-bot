@@ -5,6 +5,7 @@ import pytest
 
 from lxbot.bot import texts
 from lxbot.monitor.detector import Debounced, Event, EventType, State
+from lxbot.storage.db import Subscriber, SubscriberStatus
 from tests.factories import at, make_snapshot
 
 KYIV = ZoneInfo("Europe/Kyiv")
@@ -101,3 +102,17 @@ def test_admin_request_text_escapes_html():
 
 def test_removed_text_keeps_name_unescaped_for_plain_text_toast():
     assert texts.removed_text("Оля <3 & Co") == "Видалено: Оля <3 & Co"
+
+
+def test_subscribers_text_marks_each_status():
+    def subscriber(chat_id, name, status):
+        return Subscriber(chat_id, name, None, status, at(0), at(0))
+
+    text = texts.subscribers_text(
+        [
+            subscriber(42, "Оля", SubscriberStatus.APPROVED),
+            subscriber(43, "Петро", SubscriberStatus.PENDING),
+            subscriber(44, "Ігор", SubscriberStatus.REJECTED),
+        ]
+    )
+    assert text.splitlines()[1:] == ["✅ Оля", "⏳ Петро", "🚫 Ігор"]

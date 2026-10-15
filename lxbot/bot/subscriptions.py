@@ -28,9 +28,16 @@ async def start(db: Database, chat_id: int, name: str, username: str | None, adm
     return StartOutcome.REQUESTED
 
 
+# A rejected user can still be approved, so a mistaken ❌ is reversible from /subscribers.
+_DECIDABLE = {
+    True: {SubscriberStatus.PENDING, SubscriberStatus.REJECTED},
+    False: {SubscriberStatus.PENDING},
+}
+
+
 async def decide(db: Database, chat_id: int, approve: bool) -> Subscriber | None:
     subscriber = await db.get_subscriber(chat_id)
-    if subscriber is None or subscriber.status is not SubscriberStatus.PENDING:
+    if subscriber is None or subscriber.status not in _DECIDABLE[approve]:
         return None
     status = SubscriberStatus.APPROVED if approve else SubscriberStatus.REJECTED
     await db.set_subscriber_status(chat_id, status)

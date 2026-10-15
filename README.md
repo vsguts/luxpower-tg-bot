@@ -13,7 +13,7 @@ Design: `docs/superpowers/specs/2026-10-15-luxpower-tg-bot-design.md`.
 | `/start` | anyone | ask for access; the admin gets ✅ / ❌ buttons |
 | `/status`, 📊 Статус | subscribers | grid, generator, battery, load, PV |
 | `/stop` | subscribers | unsubscribe (`/start` brings you back without approval) |
-| `/subscribers` | admin | list subscribers, remove one |
+| `/subscribers` | admin | list subscribers; remove, approve, reject or restore one |
 
 ## Run
 
@@ -24,6 +24,9 @@ cp .env.example .env    # fill in the token, admin id and serials
 docker compose up -d --build
 docker compose logs -f
 ```
+
+Then send `/start` to the bot from the admin account: Telegram lets a bot write only to users who
+started it, so until then the access request cards cannot reach the admin.
 
 Update: `git pull && docker compose up -d --build`. The SQLite database (subscribers, event
 journal, detector state) is in `./data`; back it up.

@@ -29,8 +29,23 @@ async def test_approve_and_already_subscribed(db):
 
 async def test_decide_twice_is_noop(db):
     await start(db, 42)
-    assert await subscriptions.decide(db, 42, approve=False) is not None
+    assert await subscriptions.decide(db, 42, approve=True) is not None
     assert await subscriptions.decide(db, 42, approve=True) is None
+    assert await subscriptions.decide(db, 42, approve=False) is None
+    assert (await db.get_subscriber(42)).status is SubscriberStatus.APPROVED
+
+
+async def test_rejected_user_can_still_be_approved(db):
+    await start(db, 42)
+    await subscriptions.decide(db, 42, approve=False)
+    approved = await subscriptions.decide(db, 42, approve=True)
+    assert approved.status is SubscriberStatus.APPROVED
+
+
+async def test_rejecting_a_rejected_user_is_noop(db):
+    await start(db, 42)
+    await subscriptions.decide(db, 42, approve=False)
+    assert await subscriptions.decide(db, 42, approve=False) is None
     assert (await db.get_subscriber(42)).status is SubscriberStatus.REJECTED
 
 

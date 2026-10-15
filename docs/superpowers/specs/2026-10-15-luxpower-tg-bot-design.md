@@ -176,7 +176,8 @@ Telegram long polling (no inbound ports).
 
   Built from the latest snapshot; if it is older than 2 minutes, say so.
 - `/stop`: unsubscribe.
-- Admin `/subscribers`: list with a remove button per user.
+- Admin `/subscribers`: approved, pending and rejected users; approved get **❌** (remove), pending
+  **✅** / **❌**, rejected **↩️** (approve), so a mistaken decision can be undone.
 - A 403 from Telegram (user blocked the bot) marks the subscriber inactive.
 
 ### Notification texts

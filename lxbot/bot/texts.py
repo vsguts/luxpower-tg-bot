@@ -22,7 +22,7 @@ REJECTED_MARK = "❌ Відхилено"
 ALREADY_DECIDED = "Запит уже оброблено"
 NOT_FOUND = "Не знайдено"
 
-_STATUS_ICONS = {SubscriberStatus.APPROVED: "✅", SubscriberStatus.PENDING: "⏳"}
+_STATUS_ICONS = {SubscriberStatus.APPROVED: "✅", SubscriberStatus.PENDING: "⏳", SubscriberStatus.REJECTED: "🚫"}
 
 
 def format_duration(duration: timedelta) -> str:
@@ -110,6 +110,11 @@ def _who(name: str, username: str | None) -> str:
 
 def admin_request_text(name: str, username: str | None, chat_id: int) -> str:
     return f"🆕 Новий запит на доступ\n{_who(name, username)}\nID: {chat_id}"
+
+
+# Names the user: the same mark is appended to a request card and to the /subscribers list.
+def decision_mark(approve: bool, name: str) -> str:
+    return f"{APPROVED_MARK if approve else REJECTED_MARK}: {escape(name)}"
 
 
 def subscribers_text(subscribers: list[Subscriber]) -> str:

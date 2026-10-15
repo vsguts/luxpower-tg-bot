@@ -19,7 +19,7 @@ from aiogram.types import (
 from lxbot.bot import subscriptions, texts
 from lxbot.bot.subscriptions import StartOutcome
 from lxbot.config import Settings
-from lxbot.storage.db import Database, SubscriberStatus
+from lxbot.storage.db import Database, Subscriber, SubscriberStatus
 
 router = Router()
 router.message.filter(F.chat.type == ChatType.PRIVATE)
@@ -43,6 +43,23 @@ def approval_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+_LIST_ACTIONS = {
+    SubscriberStatus.APPROVED: [("❌", "remove")],
+    SubscriberStatus.PENDING: [("✅", "approve"), ("❌", "reject")],
+    SubscriberStatus.REJECTED: [("↩️", "approve")],
+}
+
+
+def subscriber_buttons(subscriber: Subscriber) -> list[InlineKeyboardButton]:
+    return [
+        InlineKeyboardButton(
+            text=f"{icon} {subscriber.name}",
+            callback_data=Decision(action=action, chat_id=subscriber.chat_id).pack(),
+        )
+        for icon, action in _LIST_ACTIONS[subscriber.status]
+    ]
 
 
 @router.message(CommandStart())
@@ -85,7 +102,7 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
             await bot.send_message(subscriber.chat_id, texts.REQUEST_REJECTED)
     # Telegram hands over an inaccessible message for requests older than ~48 h; the decision is already stored.
     if isinstance(query.message, Message):
-        mark = texts.APPROVED_MARK if approve else texts.REJECTED_MARK
+        mark = texts.decision_mark(approve, subscriber.name)
         with contextlib.suppress(TelegramBadRequest):
             await query.message.edit_text(f"{query.message.html_text}\n\n{mark}")
     await query.answer()
@@ -110,15 +127,11 @@ async def on_stop(message: Message, db: Database) -> None:
 async def on_subscribers(message: Message, db: Database, settings: Settings) -> None:
     if message.chat.id != settings.admin_chat_id:
         return
-    subscribers = await db.subscribers(SubscriberStatus.APPROVED, SubscriberStatus.PENDING)
+    subscribers = await db.subscribers(*_LIST_ACTIONS)
     if not subscribers:
         await message.answer(texts.NO_SUBSCRIBERS)
         return
-    rows = [
-        [InlineKeyboardButton(text=f"❌ {s.name}", callback_data=Decision(action="remove", chat_id=s.chat_id).pack())]
-        for s in subscribers
-        if s.chat_id != settings.admin_chat_id
-    ]
+    rows = [subscriber_buttons(s) for s in subscribers if s.chat_id != settings.admin_chat_id]
     await message.answer(
         texts.subscribers_text(subscribers),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,

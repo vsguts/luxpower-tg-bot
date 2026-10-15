@@ -77,6 +77,45 @@ async def test_status_for_an_approved_user(db):
     assert "🔋 Батарея: 80%" in msg.answer.await_args.args[0]
 
 
+async def test_subscribers_offers_a_fix_for_every_status(db):
+    await db.save_subscriber(ADMIN, "Admin", None, SubscriberStatus.APPROVED)
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    await db.save_subscriber(43, "Петро", None, SubscriberStatus.PENDING)
+    await db.save_subscriber(44, "Ігор", None, SubscriberStatus.REJECTED)
+    await db.save_subscriber(45, "Пішов", None, SubscriberStatus.INACTIVE)
+    msg = message(ADMIN)
+    await on_subscribers(msg, db=db, settings=make_settings(ADMIN))
+    text = msg.answer.await_args.args[0]
+    assert "🚫 Ігор" in text
+    assert "Пішов" not in text
+    keyboard = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in keyboard] == [
+        [("❌ Оля", Decision(action="remove", chat_id=42).pack())],
+        [
+            ("✅ Петро", Decision(action="approve", chat_id=43).pack()),
+            ("❌ Петро", Decision(action="reject", chat_id=43).pack()),
+        ],
+        [("↩️ Ігор", Decision(action="approve", chat_id=44).pack())],
+    ]
+
+
+async def test_subscribers_is_admin_only(db):
+    msg = message(42)
+    await on_subscribers(msg, db=db, settings=make_settings(ADMIN))
+    msg.answer.assert_not_awaited()
+
+
+async def test_a_rejected_user_can_be_approved_from_the_list(db):
+    await db.save_subscriber(44, "Ігор", None, SubscriberStatus.REJECTED)
+    admin_message = MagicMock(spec=Message, html_text="👥 Підписники:", edit_text=AsyncMock())
+    query = SimpleNamespace(from_user=SimpleNamespace(id=ADMIN), message=admin_message, answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    await on_decision(query, Decision(action="approve", chat_id=44), db=db, settings=make_settings(ADMIN), bot=bot)
+    assert (await db.get_subscriber(44)).status is SubscriberStatus.APPROVED
+    assert bot.send_message.await_args.args == (44, texts.SUBSCRIBED)
+    assert "Ігор" in admin_message.edit_text.await_args.args[0]
+
+
 def test_router_registers_every_handler():
     message_callbacks = [h.callback for h in router.message.handlers]
     query_callbacks = [h.callback for h in router.callback_query.handlers]
