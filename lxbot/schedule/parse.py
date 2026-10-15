@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Mapping
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from lxbot.schedule.model import DaySchedule, Outage, Schedule, merge_outages
@@ -44,11 +44,13 @@ def parse_schedule(document: Mapping, group: str, tz: ZoneInfo) -> Schedule:
                 continue
             day = datetime.fromtimestamp(int(day_key), tz).date()
             days[day] = DaySchedule(group, day, merge_outages(_slot_outages(day, slots, tz)))
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, OSError) as exc:
         raise ScheduleParseError(f"malformed schedule document: {exc!r}") from exc
     if not days:
         raise ScheduleParseError(f"group {group} is not in the schedule document")
-    status = document.get("lastUpdateStatus") or {}
+    status = document.get("lastUpdateStatus")
+    if not isinstance(status, Mapping):
+        status = {}
     return Schedule(
         group=group,
         days=days,
@@ -70,11 +72,22 @@ def _slot_outages(day: date, slots: Mapping[str, str], tz: ZoneInfo) -> list[Out
                 log.warning("unknown schedule state %r, counted as a possible outage", state)
             span = _UNKNOWN_SPAN
         first, last, certain = span
-        hour_start = datetime.combine(day, time(int(slot) - 1), tz)
+        # Each boundary is a wall-clock reading converted on its own: adding minutes to an aware
+        # datetime counts elapsed time and splits adjacent slots around a DST switch. time() also
+        # rejects slots outside 1..24.
+        hour_start = datetime.combine(day, time(int(slot) - 1))
         outages.append(
-            Outage(hour_start + timedelta(minutes=first), hour_start + timedelta(minutes=last), certain)
+            Outage(
+                _wall_to_utc(hour_start + timedelta(minutes=first), tz),
+                _wall_to_utc(hour_start + timedelta(minutes=last), tz),
+                certain,
+            )
         )
     return outages
+
+
+def _wall_to_utc(wall: datetime, tz: ZoneInfo) -> datetime:
+    return wall.replace(tzinfo=tz).astimezone(UTC)
 
 
 def _dtek_time(value: object, tz: ZoneInfo) -> datetime | None:
@@ -86,6 +99,7 @@ def _dtek_time(value: object, tz: ZoneInfo) -> datetime | None:
 
 def _utc_time(value: object) -> datetime | None:
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

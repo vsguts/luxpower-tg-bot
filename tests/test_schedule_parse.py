@@ -6,9 +6,11 @@ import pytest
 
 from lxbot.schedule.model import DaySchedule, Outage
 from lxbot.schedule.parse import ScheduleParseError, group_key, parse_schedule
-from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local, make_document
+from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local, make_document, make_slots
 
 SAMPLE = json.loads((Path(__file__).parent / "fixtures" / "kyiv-region-sample.json").read_text())
+FALL_BACK = date(2026, 10, 25)
+SPRING_FORWARD = date(2026, 3, 29)
 
 
 def test_group_key():
@@ -98,3 +100,51 @@ def test_day_schedule_round_trip_and_label():
     assert DaySchedule.from_dict(day.to_dict()) == day
     assert day.label == "6.2"
     assert DaySchedule("GPV3.2", date(2026, 10, 15)).outages == ()
+
+
+def test_non_mapping_status_counts_as_not_ok():
+    document = make_document({TODAY: {}})
+    document["lastUpdateStatus"] = ["ok"]
+    assert parse_schedule(document, GROUP, KYIV).source_ok is False
+
+
+def test_out_of_range_day_key_is_an_error():
+    document = make_document({TODAY: {}})
+    document["fact"]["data"]["99999999999999999999"] = {GROUP: make_slots({})}
+    with pytest.raises(ScheduleParseError):
+        parse_schedule(document, GROUP, KYIV)
+
+
+def test_naive_last_updated_is_read_as_utc():
+    document = make_document({TODAY: {}})
+    document["lastUpdated"] = "2026-10-15T20:31:23"
+    schedule = parse_schedule(document, GROUP, KYIV)
+    assert schedule.source_updated == datetime(2026, 10, 15, 20, 31, 23, tzinfo=UTC)
+
+
+def test_fall_back_day_outage_spans_real_hours():
+    day = parse_schedule(make_document({FALL_BACK: {3: "no", 4: "no", 5: "no"}}), GROUP, KYIV).days[FALL_BACK]
+    assert day.outages == (Outage(local(2026, 10, 25, 2), local(2026, 10, 25, 5)),)
+    assert day.outages[0].duration == timedelta(hours=4)
+    assert DaySchedule.from_dict(day.to_dict()) == day
+
+
+def test_fall_back_repeated_wall_hour_lasts_two_real_hours():
+    outage = parse_schedule(make_document({FALL_BACK: {4: "no"}}), GROUP, KYIV).days[FALL_BACK].outages[0]
+    assert outage.duration == timedelta(hours=2)
+
+
+@pytest.mark.parametrize("slot", ["0", "25"])
+def test_out_of_range_slot_is_an_error(slot):
+    document = make_document({TODAY: {}})
+    next(iter(document["fact"]["data"].values()))[GROUP][slot] = "no"
+    with pytest.raises(ScheduleParseError):
+        parse_schedule(document, GROUP, KYIV)
+
+
+def test_spring_forward_day_skips_the_missing_hour():
+    day = parse_schedule(make_document({SPRING_FORWARD: {3: "no", 4: "no", 5: "no"}}), GROUP, KYIV).days[
+        SPRING_FORWARD
+    ]
+    assert len(day.outages) == 1
+    assert day.outages[0].duration == timedelta(hours=2)
