@@ -99,5 +99,5 @@ def test_admin_request_text_escapes_html():
     assert "42" in text
 
 
-def test_removed_text_escapes_name():
-    assert texts.removed_text("Оля <3") == "Видалено: Оля &lt;3"
+def test_removed_text_keeps_name_unescaped_for_plain_text_toast():
+    assert texts.removed_text("Оля <3 & Co") == "Видалено: Оля <3 & Co"

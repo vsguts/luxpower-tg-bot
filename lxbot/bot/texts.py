@@ -118,5 +118,6 @@ def subscribers_text(subscribers: list[Subscriber]) -> str:
     return "\n".join(lines)
 
 
+# Not escaped: shown in a plain-text callback toast, unlike the other HTML texts.
 def removed_text(name: str) -> str:
-    return f"Видалено: {escape(name)}"
+    return f"Видалено: {name}"
