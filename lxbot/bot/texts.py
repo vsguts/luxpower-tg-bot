@@ -7,7 +7,7 @@ from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, nex
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import Subscriber, SubscriberStatus
 
-STALE_AFTER = timedelta(minutes=2)
+SNAPSHOT_STALE_AFTER = timedelta(minutes=2)
 ON_TIME = timedelta(minutes=2)
 
 STATUS_BUTTON = "📊 Статус"
@@ -227,7 +227,7 @@ def status_text(
     if schedule_line:
         lines.append(schedule_line)
     lines.append(f"🕐 Оновлено {snapshot.taken_at.astimezone(tz):%H:%M:%S}")
-    if now - snapshot.taken_at > STALE_AFTER:
+    if now - snapshot.taken_at > SNAPSHOT_STALE_AFTER:
         lines.append("⚠️ Дані застарілі: немає зв'язку з інвертором")
     return "\n".join(lines)
 

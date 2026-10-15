@@ -19,7 +19,7 @@ SCHEDULE_KEY = "schedule"
 DIGESTS_KEY = "schedule-digests"
 HEALTH_KEY = "schedule-health"
 TICK_SECONDS = 60.0
-STALE_AFTER = timedelta(hours=6)
+SCHEDULE_STALE_AFTER = timedelta(hours=6)
 REFRESH_BEFORE_DIGEST = timedelta(minutes=15)
 DIGEST_RETRY = timedelta(minutes=5)
 SOURCE_MAX_AGE = timedelta(hours=1)
@@ -91,7 +91,7 @@ class ScheduleService:
         return self._config
 
     def current(self, now: datetime) -> Schedule | None:
-        if self._schedule is None or self._fetched_at is None or now - self._fetched_at > STALE_AFTER:
+        if self._schedule is None or self._fetched_at is None or now - self._fetched_at > SCHEDULE_STALE_AFTER:
             return None
         return self._schedule
 
