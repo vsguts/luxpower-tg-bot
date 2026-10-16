@@ -256,7 +256,13 @@ def status_text(
     schedule_line = schedule_status_line(schedule, now, tz) if schedule is not None else None
     if snapshot is None or state is None:
         return f"{NO_DATA}\n{schedule_line}" if schedule_line else NO_DATA
-    grid = _grid_status(snapshot, state, now)
+    if state.grid.value:
+        grid = f"є · {snapshot.grid_v:.0f} В"
+    else:
+        grid = f"немає вже {format_duration(now - state.grid.since)}"
+    # The latest reading disagrees with the debounced state: a change may be under way.
+    if snapshot.grid_present_given(state.grid.value) != state.grid.value:
+        grid += " (перевіряю)"
     if snapshot.battery_w > 0:
         flow = f" · заряджається {format_power(snapshot.battery_w)}"
     elif snapshot.battery_w < 0:
@@ -277,17 +283,6 @@ def status_text(
     if now - snapshot.taken_at > SNAPSHOT_STALE_AFTER:
         lines.append("⚠️ Дані застарілі: немає зв'язку з пристроєм")
     return "\n".join(lines)
-
-
-# While the detector is still confirming a change (~45 s), describe what the inverter sees now:
-# the confirmed state next to the fresh battery reading reads as a contradiction.
-def _grid_status(snapshot: Snapshot, state: State, now: datetime) -> str:
-    present_now = snapshot.grid_present_given(state.grid.value)
-    if present_now != state.grid.value:
-        return f"з'являється · {snapshot.grid_v:.0f} В (перевіряю)" if present_now else "зникає (перевіряю)"
-    if state.grid.value:
-        return f"є · {snapshot.grid_v:.0f} В"
-    return f"немає вже {format_duration(now - state.grid.since)}"
 
 
 def _status_forecast(snapshot: Snapshot, state: State, battery: BatteryConfig | None) -> Forecast | None:
