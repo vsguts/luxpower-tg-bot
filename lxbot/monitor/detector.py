@@ -217,8 +217,10 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
     on_battery = not grid.value and not gen.value
     if not on_battery:
         new = replace(new, drain_soc=None, drain_since=None)
-    elif new.drain_since is None:
-        new = replace(new, drain_soc=soc, drain_since=max(grid.since, gen.since))
+    # The trend runs from the stretch's highest charge, measured now: solar or a BMS correction can lift
+    # the charge mid-outage, and a state restored mid-outage has no starting charge to trust.
+    elif new.drain_since is None or soc > new.drain_soc:
+        new = replace(new, drain_soc=soc, drain_since=at)
     forecast = forecast_for(
         snapshot,
         on_battery=on_battery,

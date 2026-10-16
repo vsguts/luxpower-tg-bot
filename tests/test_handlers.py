@@ -185,3 +185,9 @@ async def test_status_shows_the_battery_forecast(db):
     msg = message(42)
     await on_status(msg, db=db, settings=settings, poller=poller)
     assert "⏳ Вистачить: ~8 год при 1.1 кВт" in msg.answer.await_args.args[0]
+
+
+def test_service_messages_get_no_reply():
+    (catch_all,) = [h for h in router.message.handlers if h.callback is on_other]
+    pinned = SimpleNamespace(pinned_message=object())
+    assert not all(f.callback(pinned) for f in catch_all.filters)

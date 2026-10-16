@@ -151,7 +151,8 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
 
 
 # Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.
-@router.message()
+# Service messages (a pinned alert) are not something the user said: no reply.
+@router.message(~F.pinned_message)
 async def on_other(message: Message, db: Database, settings: Settings) -> None:
     subscriber = await db.get_subscriber(message.chat.id)
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:

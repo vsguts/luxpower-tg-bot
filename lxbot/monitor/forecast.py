@@ -11,6 +11,8 @@ MIN_TREND_TIME = timedelta(minutes=30)
 MIN_TREND_DROP = 2
 # Both estimates are rough; minute precision would promise more than the BMS knows.
 FORECAST_STEP = timedelta(minutes=10)
+# A trickle of discharge (the sun almost covers the load) gives runtimes of days that only confuse.
+LONG_RUNTIME = timedelta(days=2)
 
 
 @dataclass(frozen=True)
@@ -42,9 +44,8 @@ def _seconds(duration: timedelta | None) -> int | None:
 
 
 # round() would send halves to the even step; a forecast reads better rounded half up.
-def _rounded(hours: float) -> timedelta:
-    step_hours = FORECAST_STEP.total_seconds() / 3600
-    return FORECAST_STEP * math.floor(hours / step_hours + 0.5)
+def _rounded(duration: timedelta) -> timedelta:
+    return FORECAST_STEP * math.floor(duration / FORECAST_STEP + 0.5)
 
 
 def _usable_percent(soc: int, battery: BatteryConfig) -> int:
@@ -55,7 +56,7 @@ def by_power(soc: int, power_w: int, battery: BatteryConfig) -> timedelta | None
     if power_w <= 0:
         return None
     energy_wh = battery.capacity_wh * _usable_percent(soc, battery) / 100
-    return _rounded(energy_wh / power_w)
+    return _rounded(timedelta(hours=energy_wh / power_w))
 
 
 def by_trend(
@@ -65,8 +66,8 @@ def by_trend(
     drop = start_soc - soc
     if elapsed < MIN_TREND_TIME or drop < MIN_TREND_DROP:
         return None
-    hours_per_percent = elapsed.total_seconds() / 3600 / drop
-    return _rounded(_usable_percent(soc, battery) * hours_per_percent)
+    # Multiply before dividing: timedelta / int rounds to microseconds and can nudge a half step down.
+    return _rounded(elapsed * _usable_percent(soc, battery) / drop)
 
 
 def forecast_for(

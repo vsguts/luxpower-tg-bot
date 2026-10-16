@@ -23,7 +23,7 @@ def off(first, count, soc=80, **kwargs):
 
 def test_outage_starts_the_battery_stretch_and_forecasts_by_power():
     state, events = run([make_snapshot(0)] + off(1, 3, soc=85))
-    assert (state.drain_soc, state.drain_since) == (85, at(1))
+    assert (state.drain_soc, state.drain_since) == (85, at(3))
     (lost,) = events
     assert lost.type == EventType.GRID_LOST
     assert lost.forecast.power_w == 1000
@@ -53,7 +53,7 @@ def test_generator_pauses_the_stretch_and_its_stop_restarts_it():
     state, _ = run(gen_on, state)
     assert state.drain_since is None
     state, _ = run(off(7, 3, soc=90), state)
-    assert (state.drain_soc, state.drain_since) == (90, at(7))
+    assert (state.drain_soc, state.drain_since) == (90, at(9))
 
 
 def test_first_start_on_battery_starts_the_stretch():
@@ -85,3 +85,21 @@ def test_payload_includes_the_forecast_only_when_set():
     assert events[0].to_payload()["forecast"]["power_w"] == 1000
     _, plain = run([make_snapshot(0)] + off(1, 3), thresholds=Thresholds())
     assert "forecast" not in plain[0].to_payload()
+
+
+def test_a_rising_charge_restarts_the_stretch_at_its_peak():
+    # Solar lifts the battery during the outage: the trend must not average the climb in.
+    state, _ = run([make_snapshot(0)] + off(1, 3, soc=60))
+    sunny = [make_snapshot(4 + i, grid=False, soc=60 + i, battery_w=800) for i in range(31)]
+    state, _ = run(sunny, state)
+    assert (state.drain_soc, state.drain_since) == (90, at(34))
+    state, _ = run(off(35, 1, soc=89), state)
+    assert (state.drain_soc, state.drain_since) == (90, at(34))
+
+
+def test_an_old_row_restored_mid_outage_starts_the_stretch_now():
+    state, _ = run([make_snapshot(0)] + off(1, 3, soc=90))
+    old = state.to_dict()
+    del old["drain_soc"], old["drain_since"]
+    state, _ = run(off(720, 1, soc=50), State.from_dict(old))
+    assert (state.drain_soc, state.drain_since) == (50, at(720))

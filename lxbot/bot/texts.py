@@ -3,7 +3,7 @@ from html import escape
 
 from lxbot.luxpower.registers import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
-from lxbot.monitor.forecast import FORECAST_STEP, BatteryConfig, Forecast, forecast_for
+from lxbot.monitor.forecast import FORECAST_STEP, LONG_RUNTIME, BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import Subscriber, SubscriberStatus
@@ -19,7 +19,7 @@ SUBSCRIBED = "✅ Підписку підтверджено. Я повідомл
 ALREADY_SUBSCRIBED = "✅ Ви вже підписані."
 UNSUBSCRIBED = "👋 Підписку скасовано. Щоб повернутися, натисніть /start."
 NOT_SUBSCRIBED = "Натисніть /start, щоб надіслати запит на доступ."
-UNSUPPORTED = "🤖 Я не розумію текстових повідомлень.\nДоступно: 📊 Статус (/status), /stop"
+UNSUPPORTED = "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
 TREND_PENDING = "📉 За темпом розряду: ще мало даних"
 NO_DATA = "⏳ Ще немає даних від інвертора."
 NO_SUBSCRIBERS = "Підписників немає."
@@ -216,6 +216,8 @@ def _digest_text(title: str, event: Event, tz: tzinfo, icon: str = "📅") -> st
 def _runtime(duration: timedelta) -> str:
     if duration < FORECAST_STEP:
         return f"менше {format_duration(FORECAST_STEP)}"
+    if duration > LONG_RUNTIME:
+        return f"понад {format_duration(LONG_RUNTIME)}"
     return f"~{format_duration(duration)}"
 
 

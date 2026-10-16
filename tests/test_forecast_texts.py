@@ -90,6 +90,12 @@ def test_status_without_battery_config_or_on_grid_has_no_forecast():
 
 def test_unsupported_text_hints_the_commands():
     assert texts.unsupported_text(admin=False) == (
-        "🤖 Я не розумію текстових повідомлень.\nДоступно: 📊 Статус (/status), /stop"
+        "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
     )
     assert texts.unsupported_text(admin=True).endswith("/stop, /subscribers")
+
+
+def test_a_runtime_beyond_two_days_is_capped():
+    event = Event(EventType.GRID_LOST, at(0), 95, previous_duration=timedelta(hours=1),
+                  forecast=Forecast(60, timedelta(days=8, hours=21)))
+    assert lines(event)[3] == "⏳ Вистачить: понад 2 дн при 60 Вт"
