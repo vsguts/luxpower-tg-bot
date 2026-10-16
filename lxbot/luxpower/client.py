@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from lxbot.device.snapshot import DeviceError, Snapshot
 from lxbot.luxpower.frame import (
     FUNC_READ_INPUT,
     FrameError,
@@ -11,7 +12,7 @@ from lxbot.luxpower.frame import (
     parse_read_response,
     split_frames,
 )
-from lxbot.luxpower.registers import BLOCK_SIZE, INPUT_BLOCKS, InvalidSnapshot, Snapshot, decode_snapshot
+from lxbot.luxpower.registers import BLOCK_SIZE, INPUT_BLOCKS, InvalidReading, decode_reading
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ _READ_CHUNK = 4096
 _DRAIN_TIMEOUT = 0.05
 
 
-class DongleError(Exception):
+class DongleError(DeviceError):
     pass
 
 
@@ -44,8 +45,8 @@ class DongleClient:
         for start in INPUT_BLOCKS:
             registers.update(enumerate(await self.read_input(start, BLOCK_SIZE), start))
         try:
-            return decode_snapshot(registers, taken_at)
-        except InvalidSnapshot as exc:
+            return decode_reading(registers, taken_at).to_snapshot()
+        except InvalidReading as exc:
             await self.close()
             raise DongleError(str(exc)) from exc
 

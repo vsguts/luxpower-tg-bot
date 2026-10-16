@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from lxbot.luxpower.registers import Snapshot
+from lxbot.device.snapshot import Snapshot
 from lxbot.monitor.forecast import BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import ScheduleMatch
 from lxbot.schedule.model import DaySchedule
@@ -18,8 +18,9 @@ class EventType(StrEnum):
     GEN_CHARGED = "gen_charged"
     GEN_STARTED = "gen_started"
     GEN_STOPPED = "gen_stopped"
-    DONGLE_DOWN = "dongle_down"
-    DONGLE_UP = "dongle_up"
+    # The events journal keeps the names from when the only device was the LuxPower dongle.
+    DEVICE_DOWN = "dongle_down"
+    DEVICE_UP = "dongle_up"
     SCHEDULE_TODAY = "schedule_today"
     SCHEDULE_TOMORROW = "schedule_tomorrow"
     SCHEDULE_TOMORROW_PENDING = "schedule_tomorrow_pending"
@@ -38,8 +39,8 @@ class Audience(StrEnum):
 _AUDIENCES = {
     EventType.GEN_STARTED: Audience.JOURNAL,
     EventType.GEN_STOPPED: Audience.JOURNAL,
-    EventType.DONGLE_DOWN: Audience.ADMIN,
-    EventType.DONGLE_UP: Audience.ADMIN,
+    EventType.DEVICE_DOWN: Audience.ADMIN,
+    EventType.DEVICE_UP: Audience.ADMIN,
     EventType.SCHEDULE_SOURCE_DOWN: Audience.ADMIN,
     EventType.SCHEDULE_SOURCE_UP: Audience.ADMIN,
 }

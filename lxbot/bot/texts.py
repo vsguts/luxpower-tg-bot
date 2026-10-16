@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta, tzinfo
 from html import escape
 
-from lxbot.luxpower.registers import Snapshot
+from lxbot.device.snapshot import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
 from lxbot.monitor.forecast import FORECAST_STEP, LONG_RUNTIME, BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
@@ -183,9 +183,9 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
             return "\n".join(lines)
         case EventType.GEN_CHARGED:
             return f"🔋 <b>Заряджено {event.soc}%</b>\n⛽ Генератор можна вимикати"
-        case EventType.DONGLE_DOWN:
+        case EventType.DEVICE_DOWN:
             return f"⚠️ Немає зв'язку з інвертором з {clock}"
-        case EventType.DONGLE_UP:
+        case EventType.DEVICE_UP:
             return f"✅ Зв'язок з інвертором відновлено о {clock}"
         case EventType.SCHEDULE_TODAY:
             return _digest_text("Графік на сьогодні", event, tz)

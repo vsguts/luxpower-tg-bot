@@ -51,8 +51,8 @@ def test_grid_restored_mentions_generator_only_when_it_ran():
         (EventType.BATTERY_LOW, "Час заводити генератор"),
         (EventType.BATTERY_CRITICAL, "Терміново заведіть генератор"),
         (EventType.GEN_CHARGED, "Генератор можна вимикати"),
-        (EventType.DONGLE_DOWN, "Немає зв'язку з інвертором"),
-        (EventType.DONGLE_UP, "Зв'язок з інвертором відновлено"),
+        (EventType.DEVICE_DOWN, "Немає зв'язку з інвертором"),
+        (EventType.DEVICE_UP, "Зв'язок з інвертором відновлено"),
     ],
 )
 def test_other_event_texts(event_type, fragment):

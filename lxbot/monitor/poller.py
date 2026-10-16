@@ -4,10 +4,9 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
-from lxbot.luxpower.client import DongleError
-from lxbot.luxpower.registers import Snapshot
+from lxbot.device.snapshot import DeviceError, Snapshot
 from lxbot.monitor.detector import Event, State, Thresholds, detect
-from lxbot.monitor.watchdog import DongleWatch
+from lxbot.monitor.watchdog import DeviceWatch
 from lxbot.storage.db import Database
 
 log = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ class Poller:
         self._thresholds = thresholds
         self._interval = interval
         self._clock = clock
-        self._watch = DongleWatch()
+        self._watch = DeviceWatch()
         self._saved_state: dict | None = None
         self.latest: Snapshot | None = None
         self.state: State | None = None
@@ -56,7 +55,7 @@ class Poller:
         now = self._clock()
         try:
             snapshot = await self._source.read_snapshot(now)
-        except DongleError as exc:
+        except DeviceError as exc:
             log.warning("poll failed: %s", exc)
             await self._sink.publish(self._watch.failure(now))
             return

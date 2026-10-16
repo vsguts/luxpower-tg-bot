@@ -10,13 +10,15 @@ from http import HTTPStatus
 
 import aiohttp
 
+from lxbot.device.snapshot import DeviceError
+
 DEFAULT_API_URL = "https://api-e.ecoflow.com"
 DEVICE_LIST_PATH = "/iot-open/sign/device/list"
 QUOTA_ALL_PATH = "/iot-open/sign/device/quota/all"
 SUCCESS_CODE = "0"
 
 
-class EcoFlowError(Exception):
+class EcoFlowError(DeviceError):
     pass
 
 
