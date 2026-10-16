@@ -2,7 +2,7 @@ import contextlib
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ContentType
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.callback_data import CallbackData
@@ -22,6 +22,22 @@ from lxbot.config import Settings
 from lxbot.storage.db import Database, Subscriber, SubscriberStatus
 
 router = Router()
+_USER_CONTENT = frozenset(
+    {
+        ContentType.TEXT,
+        ContentType.STICKER,
+        ContentType.PHOTO,
+        ContentType.VIDEO,
+        ContentType.VIDEO_NOTE,
+        ContentType.ANIMATION,
+        ContentType.VOICE,
+        ContentType.AUDIO,
+        ContentType.DOCUMENT,
+        ContentType.CONTACT,
+        ContentType.LOCATION,
+        ContentType.POLL,
+    }
+)
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 
@@ -116,7 +132,8 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
         return
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
-    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule))
+    battery = settings.thresholds.battery
+    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery))
 
 
 @router.message(Command("stop"))
@@ -147,3 +164,17 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
         return
     subscriber = await subscriptions.remove(db, callback_data.chat_id)
     await query.answer(texts.removed_text(subscriber.name) if subscriber else texts.NOT_FOUND)
+
+
+# Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.
+# Service messages (a pinned alert, an auto-delete timer) are not something the user said: no reply.
+@router.message(F.content_type.in_(_USER_CONTENT))
+async def on_other(message: Message, db: Database, settings: Settings) -> None:
+    subscriber = await db.get_subscriber(message.chat.id)
+    if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
+        admin = message.chat.id == settings.admin_chat_id
+        await message.answer(texts.unsupported_text(admin), reply_markup=status_keyboard())
+    elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
+        await message.answer(texts.REQUEST_PENDING)
+    else:
+        await message.answer(texts.NOT_SUBSCRIBED)

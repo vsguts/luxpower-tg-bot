@@ -3,6 +3,7 @@ from html import escape
 
 from lxbot.luxpower.registers import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
+from lxbot.monitor.forecast import FORECAST_STEP, LONG_RUNTIME, BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import Subscriber, SubscriberStatus
@@ -18,6 +19,8 @@ SUBSCRIBED = "✅ Підписку підтверджено. Я повідомл
 ALREADY_SUBSCRIBED = "✅ Ви вже підписані."
 UNSUBSCRIBED = "👋 Підписку скасовано. Щоб повернутися, натисніть /start."
 NOT_SUBSCRIBED = "Натисніть /start, щоб надіслати запит на доступ."
+UNSUPPORTED = "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
+TREND_PENDING = "📉 За темпом розряду: ще мало даних"
 NO_DATA = "⏳ Ще немає даних від інвертора."
 NO_SUBSCRIBERS = "Підписників немає."
 APPROVED_MARK = "✅ Схвалено"
@@ -152,21 +155,32 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
     clock = _clock(event.at, tz)
     match event.type:
         case EventType.GRID_LOST:
-            text = (
-                f"🔴 <b>{clock} Світло зникло</b>\n"
-                f"🕓 Воно було {format_duration(event.previous_duration)}\n"
-                f"🔋 Заряд {event.soc}%"
-            )
-            return _with_schedule(text, event, tz)
+            lines = [
+                f"🔴 <b>{clock} Світло зникло</b>",
+                f"🕓 Воно було {format_duration(event.previous_duration)}",
+                f"🔋 Заряд {event.soc}%",
+                *forecast_lines(event.forecast),
+            ]
+            return _with_schedule("\n".join(lines), event, tz)
         case EventType.GRID_RESTORED:
-            text = f"🟢 <b>{clock} Світло з'явилось</b>\n🕓 Його не було {format_duration(event.previous_duration)}"
+            lines = [
+                f"🟢 <b>{clock} Світло з'явилось</b>",
+                f"🕓 Його не було {format_duration(event.previous_duration)}",
+                f"🔋 Заряд {event.soc}%",
+            ]
             if event.gen_was_running:
-                text += "\n⛽ Генератор можна вимикати"
-            return _with_schedule(text, event, tz)
+                lines.append("⛽ Генератор можна вимикати")
+            return _with_schedule("\n".join(lines), event, tz)
         case EventType.BATTERY_LOW:
-            return f"🪫 <b>Залишилось {event.soc}%</b>\n⛽ Час заводити генератор"
+            lines = [f"🪫 <b>Залишилось {event.soc}%</b>", "⛽ Час заводити генератор", *forecast_lines(event.forecast)]
+            return "\n".join(lines)
         case EventType.BATTERY_CRITICAL:
-            return f"🚨 <b>Залишилось {event.soc}%</b>\n⛽ Терміново заведіть генератор"
+            lines = [
+                f"🚨 <b>Залишилось {event.soc}%</b>",
+                "⛽ Терміново заведіть генератор",
+                *forecast_lines(event.forecast),
+            ]
+            return "\n".join(lines)
         case EventType.GEN_CHARGED:
             return f"🔋 <b>Заряджено {event.soc}%</b>\n⛽ Генератор можна вимикати"
         case EventType.DONGLE_DOWN:
@@ -199,6 +213,32 @@ def _digest_text(title: str, event: Event, tz: tzinfo, icon: str = "📅") -> st
     return f"{text}\n⚠️ Дані могли застаріти: джерело оновлювалось {event.source_updated.astimezone(tz):%d.%m %H:%M}"
 
 
+def _runtime(duration: timedelta) -> str:
+    if duration < FORECAST_STEP:
+        return f"менше {format_duration(FORECAST_STEP)}"
+    if duration > LONG_RUNTIME:
+        return f"понад {format_duration(LONG_RUNTIME)}"
+    return f"~{format_duration(duration)}"
+
+
+def forecast_lines(forecast: Forecast | None, *, trend_pending: bool = False) -> list[str]:
+    if forecast is None:
+        return []
+    lines = []
+    if forecast.by_power is not None:
+        lines.append(f"⏳ Вистачить: {_runtime(forecast.by_power)} при {format_power(forecast.power_w)}")
+    if forecast.by_trend is not None:
+        drop = f"−{forecast.trend_drop}% за {format_duration(forecast.trend_elapsed)}"
+        lines.append(f"📉 За темпом розряду: {_runtime(forecast.by_trend)} ({drop})")
+    elif trend_pending:
+        lines.append(TREND_PENDING)
+    return lines
+
+
+def unsupported_text(admin: bool) -> str:
+    return UNSUPPORTED + (", /subscribers" if admin else "")
+
+
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:
     if event.match is None:
         return text
@@ -206,7 +246,12 @@ def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:
 
 
 def status_text(
-    snapshot: Snapshot | None, state: State | None, now: datetime, tz: tzinfo, schedule: Schedule | None = None
+    snapshot: Snapshot | None,
+    state: State | None,
+    now: datetime,
+    tz: tzinfo,
+    schedule: Schedule | None = None,
+    battery: BatteryConfig | None = None,
 ) -> str:
     schedule_line = schedule_status_line(schedule, now, tz) if schedule is not None else None
     if snapshot is None or state is None:
@@ -228,6 +273,7 @@ def status_text(
         f"⚡ Мережа: {grid}",
         f"⛽ Генератор: {'працює' if state.gen.value else 'не працює'}",
         f"🔋 Батарея: {snapshot.soc}%{flow}",
+        *forecast_lines(_status_forecast(snapshot, state, battery), trend_pending=True),
         f"🏠 Споживання: {format_power(snapshot.load_w)}",
         f"☀️ Сонце: {format_power(snapshot.pv_w)}",
     ]
@@ -237,6 +283,16 @@ def status_text(
     if now - snapshot.taken_at > SNAPSHOT_STALE_AFTER:
         lines.append("⚠️ Дані застарілі: немає зв'язку з інвертором")
     return "\n".join(lines)
+
+
+def _status_forecast(snapshot: Snapshot, state: State, battery: BatteryConfig | None) -> Forecast | None:
+    return forecast_for(
+        snapshot,
+        on_battery=not state.grid.value and not state.gen.value,
+        drain_soc=state.drain_soc,
+        drain_since=state.drain_since,
+        battery=battery,
+    )
 
 
 def _who(name: str, username: str | None) -> str:

@@ -125,8 +125,8 @@ def test_grid_restored_message_keeps_generator_line_before_schedule():
         match=ScheduleMatch(MatchKind.RESTORED, MORNING, timedelta(minutes=-12), None),
     )
     lines = texts.event_text(event, KYIV).splitlines()
-    assert lines[2] == "⛽ Генератор можна вимикати"
-    assert lines[3:] == ["⏱ За графіком до 15:00 — на 12 хв раніше", "📅 Відключень за графіком більше не заплановано"]
+    assert lines[2:4] == ["🔋 Заряд 60%", "⛽ Генератор можна вимикати"]
+    assert lines[4:] == ["⏱ За графіком до 15:00 — на 12 хв раніше", "📅 Відключень за графіком більше не заплановано"]
 
 
 def test_today_digest():

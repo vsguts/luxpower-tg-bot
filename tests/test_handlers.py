@@ -1,16 +1,20 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from aiogram.enums import ContentType
 from aiogram.types import Message
 
 from lxbot.bot import texts
-from lxbot.bot.handlers import Decision, on_decision, on_remove, on_start, on_status, on_stop, on_subscribers, router
-from lxbot.monitor.detector import initial_state
+from lxbot.bot.handlers import Decision, on_decision, on_other, on_remove, on_start, on_status, on_stop, on_subscribers, router
+from lxbot.monitor.detector import Debounced, State, initial_state
+from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import SubscriberStatus
 from tests.conftest import make_settings
-from tests.factories import make_snapshot
+from tests.factories import at, make_snapshot
 from tests.schedule_factories import GROUP, KYIV
 
 ADMIN = 1
@@ -125,6 +129,8 @@ def test_router_registers_every_handler():
     assert message_callbacks.count(on_status) == 2
     for callback in (on_start, on_stop, on_subscribers):
         assert callback in message_callbacks
+    # The catch-all must come last, or it would answer every command.
+    assert message_callbacks[-1] is on_other
     for callback in (on_decision, on_remove):
         assert callback in query_callbacks
 
@@ -141,3 +147,61 @@ async def test_status_shows_the_next_planned_outage(db):
     msg = message(42)
     await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
     assert "📅 Наступне відключення:" in msg.answer.await_args.args[0]
+
+
+async def test_free_text_from_a_subscriber_gets_the_command_hint(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    msg = message(42)
+    await on_other(msg, db=db, settings=make_settings(ADMIN))
+    assert msg.answer.await_args.args == (texts.unsupported_text(admin=False),)
+    assert msg.answer.await_args.kwargs["reply_markup"] is not None
+
+
+async def test_free_text_from_the_admin_lists_subscribers_too(db):
+    await db.save_subscriber(ADMIN, "Адмін", None, SubscriberStatus.APPROVED)
+    msg = message(ADMIN)
+    await on_other(msg, db=db, settings=make_settings(ADMIN))
+    assert msg.answer.await_args.args == (texts.unsupported_text(admin=True),)
+
+
+async def test_free_text_from_a_pending_user_says_the_request_is_pending(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
+    msg = message(42)
+    await on_other(msg, db=db, settings=make_settings(ADMIN))
+    msg.answer.assert_awaited_once_with(texts.REQUEST_PENDING)
+
+
+async def test_free_text_from_a_stranger_points_to_start(db):
+    msg = message(42)
+    await on_other(msg, db=db, settings=make_settings(ADMIN))
+    msg.answer.assert_awaited_once_with(texts.NOT_SUBSCRIBED)
+
+
+async def test_status_shows_the_battery_forecast(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    snapshot = make_snapshot(480, grid=False, soc=60, battery_w=-1100)
+    state = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)), drain_soc=72, drain_since=at(0))
+    poller = SimpleNamespace(latest=snapshot, state=state)
+    base = make_settings(ADMIN)
+    settings = replace(base, thresholds=replace(base.thresholds, battery=BatteryConfig(16000, 5)))
+    msg = message(42)
+    await on_status(msg, db=db, settings=settings, poller=poller)
+    assert "⏳ Вистачить: ~8 год при 1.1 кВт" in msg.answer.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "answered"),
+    [
+        (ContentType.TEXT, True),
+        (ContentType.STICKER, True),
+        (ContentType.PHOTO, True),
+        (ContentType.VOICE, True),
+        (ContentType.PINNED_MESSAGE, False),
+        (ContentType.MESSAGE_AUTO_DELETE_TIMER_CHANGED, False),
+        (ContentType.WRITE_ACCESS_ALLOWED, False),
+    ],
+)
+def test_the_catch_all_answers_only_what_a_person_sent(content_type, answered):
+    (catch_all,) = [h for h in router.message.handlers if h.callback is on_other]
+    update = SimpleNamespace(content_type=content_type)
+    assert all(f.callback(update) for f in catch_all.filters) is answered

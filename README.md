@@ -15,6 +15,20 @@ Design: `docs/superpowers/specs/2026-10-15-luxpower-tg-bot-design.md`.
 | `/stop` | subscribers | unsubscribe (`/start` brings you back without approval) |
 | `/subscribers` | admin | list subscribers; remove, approve, reject or restore one |
 
+Any other message gets a short hint with the available commands.
+
+## Battery forecast
+
+With `BATTERY_CAPACITY_WH` set (e.g. `16000`), the bot estimates how long the battery lasts while the
+house runs on it (no grid, no generator), down to `BATTERY_RESERVE_SOC` (default 5 %):
+
+- **by power:** remaining energy ÷ current discharge power, like a charging station shows it;
+- **by trend:** the charge lost since this battery-only stretch began ÷ the time it took (shown after 30
+  minutes and a 2 % drop).
+
+Both are rounded to 10 minutes. They appear in `/status`, in "Світло зникло" (by power only, since there
+is no trend yet) and in the 30 % / 15 % alerts.
+
 ## Outage schedule
 
 With `SCHEDULE_GROUP` set (e.g. `3.2`), the bot follows the DTEK KREM planned outage schedule for that

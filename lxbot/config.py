@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
+from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, ScheduleConfig
 
@@ -84,6 +85,15 @@ def _clock_time(env: Mapping[str, str], name: str, default: str) -> time:
     return moment
 
 
+def battery_config_from_env(env: Mapping[str, str]) -> BatteryConfig | None:
+    if not env.get("BATTERY_CAPACITY_WH", "").strip():
+        return None
+    reserve = _number(env, "BATTERY_RESERVE_SOC", "5", int)
+    if not 0 <= reserve < 100:
+        raise ConfigError("BATTERY_RESERVE_SOC must be between 0 and 99")
+    return BatteryConfig(capacity_wh=_positive(env, "BATTERY_CAPACITY_WH", ""), reserve_soc=reserve)
+
+
 def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     queue = env.get("SCHEDULE_GROUP", "").strip()
     if not queue:
@@ -121,6 +131,7 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         soc_low=_number(env, "SOC_LOW", "30", int),
         soc_critical=_number(env, "SOC_CRITICAL", "15", int),
         soc_gen_full=_number(env, "SOC_GEN_FULL", "90", int),
+        battery=battery_config_from_env(env),
     )
     if not thresholds.soc_critical < thresholds.soc_low < thresholds.soc_gen_full:
         raise ConfigError("thresholds must satisfy SOC_CRITICAL < SOC_LOW < SOC_GEN_FULL")

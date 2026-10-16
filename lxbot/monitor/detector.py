@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from lxbot.luxpower.registers import Snapshot
+from lxbot.monitor.forecast import BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import ScheduleMatch
 from lxbot.schedule.model import DaySchedule
 
@@ -54,6 +55,7 @@ class Event:
     schedule: DaySchedule | None = None
     match: ScheduleMatch | None = None
     source_updated: datetime | None = None
+    forecast: Forecast | None = None
 
     @property
     def audience(self) -> Audience:
@@ -72,6 +74,8 @@ class Event:
             payload["match"] = self.match.to_payload()
         if self.source_updated is not None:
             payload["source_updated"] = self.source_updated.isoformat()
+        if self.forecast is not None:
+            payload["forecast"] = self.forecast.to_payload()
         return payload
 
 
@@ -84,6 +88,7 @@ class Thresholds:
     confirm_polls: int = 3
     battery_confirm_polls: int = 2
     max_streak_age: timedelta = timedelta(minutes=2)
+    battery: BatteryConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,9 @@ class State:
     gen_charged_sent: bool = False
     low_streak: int = 0
     critical_streak: int = 0
+    # Start of the current stretch on battery alone (no grid, no generator), for the discharge trend.
+    drain_soc: int | None = None
+    drain_since: datetime | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -143,6 +151,8 @@ class State:
             "gen_charged_sent": self.gen_charged_sent,
             "low_streak": self.low_streak,
             "critical_streak": self.critical_streak,
+            "drain_soc": self.drain_soc,
+            "drain_since": self.drain_since.isoformat() if self.drain_since else None,
         }
 
     # Rows written by an older version lack the newer fields; they start from the defaults.
@@ -156,6 +166,8 @@ class State:
             gen_charged_sent=data.get("gen_charged_sent", False),
             low_streak=data.get("low_streak", 0),
             critical_streak=data.get("critical_streak", 0),
+            drain_soc=data.get("drain_soc"),
+            drain_since=datetime.fromisoformat(data["drain_since"]) if data.get("drain_since") else None,
         )
 
 
@@ -203,6 +215,22 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
         new = replace(new, critical_sent=False)
 
     on_battery = not grid.value and not gen.value
+    if not on_battery:
+        new = replace(new, drain_soc=None, drain_since=None)
+    # The trend runs from the stretch's highest charge, measured now: solar can lift the charge
+    # mid-outage, and a state restored mid-outage has no starting charge to trust. A rise counts only
+    # while the battery is actually charging, so one garbled high reading does not reset the trend.
+    elif new.drain_since is None or (soc > new.drain_soc and snapshot.battery_w > 0):
+        new = replace(new, drain_soc=soc, drain_since=at)
+    forecast = forecast_for(
+        snapshot,
+        on_battery=on_battery,
+        drain_soc=new.drain_soc,
+        drain_since=new.drain_since,
+        battery=thresholds.battery,
+    )
+    events = [replace(e, forecast=forecast) if e.type is EventType.GRID_LOST else e for e in events]
+
     battery_confirm = thresholds.battery_confirm_polls
     new = replace(
         new,
@@ -210,10 +238,10 @@ def detect(state: State | None, snapshot: Snapshot, thresholds: Thresholds) -> t
         critical_streak=_streak(new.critical_streak, on_battery and soc <= thresholds.soc_critical, battery_confirm),
     )
     if new.critical_streak >= battery_confirm and not new.critical_sent:
-        events.append(Event(EventType.BATTERY_CRITICAL, at, soc))
+        events.append(Event(EventType.BATTERY_CRITICAL, at, soc, forecast=forecast))
         new = replace(new, critical_sent=True, low_sent=True)
     elif new.low_streak >= battery_confirm and not new.low_sent:
-        events.append(Event(EventType.BATTERY_LOW, at, soc))
+        events.append(Event(EventType.BATTERY_LOW, at, soc, forecast=forecast))
         new = replace(new, low_sent=True)
 
     if gen.value and not grid.value and soc >= thresholds.soc_gen_full and not new.gen_charged_sent:
