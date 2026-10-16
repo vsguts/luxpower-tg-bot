@@ -21,7 +21,7 @@ UNSUBSCRIBED = "👋 Підписку скасовано. Щоб поверну�
 NOT_SUBSCRIBED = "Натисніть /start, щоб надіслати запит на доступ."
 UNSUPPORTED = "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
 TREND_PENDING = "📉 За темпом розряду: ще мало даних"
-NO_DATA = "⏳ Ще немає даних від інвертора."
+NO_DATA = "⏳ Ще немає даних від пристрою."
 NO_SUBSCRIBERS = "Підписників немає."
 APPROVED_MARK = "✅ Схвалено"
 REJECTED_MARK = "❌ Відхилено"
@@ -184,9 +184,9 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
         case EventType.GEN_CHARGED:
             return f"🔋 <b>Заряджено {event.soc}%</b>\n⛽ Генератор можна вимикати"
         case EventType.DEVICE_DOWN:
-            return f"⚠️ Немає зв'язку з інвертором з {clock}"
+            return f"⚠️ Немає зв'язку з пристроєм з {clock}"
         case EventType.DEVICE_UP:
-            return f"✅ Зв'язок з інвертором відновлено о {clock}"
+            return f"✅ Зв'язок з пристроєм відновлено о {clock}"
         case EventType.SCHEDULE_TODAY:
             return _digest_text("Графік на сьогодні", event, tz)
         case EventType.SCHEDULE_TOMORROW:
@@ -281,7 +281,7 @@ def status_text(
         lines.append(schedule_line)
     lines.append(f"🕐 Оновлено {snapshot.taken_at.astimezone(tz):%H:%M:%S}")
     if now - snapshot.taken_at > SNAPSHOT_STALE_AFTER:
-        lines.append("⚠️ Дані застарілі: немає зв'язку з інвертором")
+        lines.append("⚠️ Дані застарілі: немає зв'язку з пристроєм")
     return "\n".join(lines)
 
 
