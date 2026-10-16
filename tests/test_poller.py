@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from lxbot.luxpower.client import DongleError
+from lxbot.device.snapshot import DeviceError
 from lxbot.monitor.detector import EventType, Thresholds
 from lxbot.monitor.poller import STATE_KEY, Poller
 from tests.factories import at, make_snapshot
@@ -67,12 +67,12 @@ async def test_restart_mid_outage_keeps_outage_start(db):
 
 
 async def test_dongle_down_and_up_reach_the_sink(db):
-    failures = [DongleError("timeout")] * 3
+    failures = [DeviceError("timeout")] * 3
     times = [at(0), at(0) + timedelta(minutes=3), at(0) + timedelta(minutes=5), at(30)]
     sink = RecordingSink()
     poller = make_poller(failures + [make_snapshot(30)], db, sink, times)
     await poll_all(poller, 4)
-    assert [e.type for e in sink.events] == [EventType.DONGLE_DOWN, EventType.DONGLE_UP]
+    assert [e.type for e in sink.events] == [EventType.DEVICE_DOWN, EventType.DEVICE_UP]
     assert sink.events[0].at == at(0)
 
 

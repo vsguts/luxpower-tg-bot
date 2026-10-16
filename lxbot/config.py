@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from lxbot.ecoflow.api import DEFAULT_API_URL, EcoFlowConfig
 from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
@@ -16,6 +17,7 @@ from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, ScheduleConfig
 
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
+_ECOFLOW_REQUIRED = ("ECOFLOW_ACCESS_KEY", "ECOFLOW_SECRET_KEY", "ECOFLOW_SERIAL")
 
 T = TypeVar("T", int, float)
 _QUEUE = re.compile(r"\d+\.\d+", re.ASCII)
@@ -35,6 +37,12 @@ class Settings:
     tz: ZoneInfo
     db_path: Path
     schedule: ScheduleConfig | None = None
+
+
+def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
+    missing = [name for name in names if not env.get(name, "").strip()]
+    if missing:
+        raise ConfigError(f"missing environment variables: {', '.join(missing)}")
 
 
 def _number(env: Mapping[str, str], name: str, default: str, convert: Callable[[str], T]) -> T:
@@ -123,10 +131,18 @@ def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:
     )
 
 
+def ecoflow_config_from_env(env: Mapping[str, str]) -> EcoFlowConfig:
+    _require(env, _ECOFLOW_REQUIRED)
+    return EcoFlowConfig(
+        access_key=env["ECOFLOW_ACCESS_KEY"].strip(),
+        secret_key=env["ECOFLOW_SECRET_KEY"].strip(),
+        serial=env["ECOFLOW_SERIAL"].strip(),
+        api_url=(env.get("ECOFLOW_API_URL") or DEFAULT_API_URL).rstrip("/"),
+    )
+
+
 def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
-    missing = [name for name in _REQUIRED if not env.get(name)]
-    if missing:
-        raise ConfigError(f"missing environment variables: {', '.join(missing)}")
+    _require(env, _REQUIRED)
     thresholds = Thresholds(
         soc_low=_number(env, "SOC_LOW", "30", int),
         soc_critical=_number(env, "SOC_CRITICAL", "15", int),

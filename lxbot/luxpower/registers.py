@@ -1,4 +1,4 @@
-"""SNA input register map (function 0x04) and the decoded Snapshot.
+"""SNA input register map (function 0x04) and the decoded Reading.
 
 The map comes from EG4 off-grid units (pylxpweb, luxpower-ha-integration) and is not yet verified
 on the SNA6000 WPV: confirm new fields with tools/dump_registers.py against the inverter display.
@@ -9,13 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
 
+from lxbot.device.snapshot import MIN_AC_FREQUENCY, MIN_AC_VOLTAGE, Snapshot
+
 BLOCK_SIZE = 40
 INPUT_BLOCKS = (0, 40, 120, 160)
 
-MIN_AC_VOLTAGE = 180.0
-# Hysteresis: a sagging feeder hovering around 180 V would otherwise flap between lost and restored.
-GRID_HOLD_VOLTAGE = 170.0
-MIN_AC_FREQUENCY = 45.0
 # A 48 V pack never reads this low; such values mean the dongle sent an empty block.
 MIN_BATTERY_VOLTAGE = 30.0
 
@@ -58,12 +56,12 @@ class Reg(IntEnum):
     LOAD_W = 170
 
 
-class InvalidSnapshot(ValueError):
+class InvalidReading(ValueError):
     pass
 
 
 @dataclass(frozen=True)
-class Snapshot:
+class Reading:
     taken_at: datetime
     status: int
     soc: int
@@ -81,14 +79,6 @@ class Snapshot:
     load_w: int
 
     @property
-    def grid_present(self) -> bool:
-        return self.grid_present_given(currently_present=False)
-
-    def grid_present_given(self, currently_present: bool) -> bool:
-        min_voltage = GRID_HOLD_VOLTAGE if currently_present else MIN_AC_VOLTAGE
-        return self.grid_v > min_voltage and self.grid_hz > MIN_AC_FREQUENCY
-
-    @property
     def ac_input_present(self) -> bool:
         return self.status in AC_INPUT_STATUSES
 
@@ -101,14 +91,26 @@ class Snapshot:
     def status_name(self) -> str:
         return STATUS_NAMES.get(self.status, f"unknown {self.status:#04x}")
 
+    def to_snapshot(self) -> Snapshot:
+        return Snapshot(
+            taken_at=self.taken_at,
+            soc=self.soc,
+            battery_w=self.battery_w,
+            pv_w=self.pv_w,
+            load_w=self.load_w,
+            grid_v=self.grid_v,
+            grid_hz=self.grid_hz,
+            gen_running=self.gen_running,
+        )
+
 
 def _signed(value: int) -> int:
     return value - 0x10000 if value & 0x8000 else value
 
 
-def decode_snapshot(registers: Mapping[int, int], taken_at: datetime) -> Snapshot:
+def decode_reading(registers: Mapping[int, int], taken_at: datetime) -> Reading:
     r = registers
-    snapshot = Snapshot(
+    reading = Reading(
         taken_at=taken_at,
         status=r[Reg.STATUS],
         soc=r[Reg.SOC_SOH] & 0xFF,
@@ -125,6 +127,6 @@ def decode_snapshot(registers: Mapping[int, int], taken_at: datetime) -> Snapsho
         gen_hz=r[Reg.GEN_HZ] / 100,
         load_w=_signed(r[Reg.LOAD_W]),
     )
-    if snapshot.battery_v < MIN_BATTERY_VOLTAGE or snapshot.soc > 100:
-        raise InvalidSnapshot(f"implausible battery {snapshot.battery_v} V, SOC {snapshot.soc}%")
-    return snapshot
+    if reading.battery_v < MIN_BATTERY_VOLTAGE or reading.soc > 100:
+        raise InvalidReading(f"implausible battery {reading.battery_v} V, SOC {reading.soc}%")
+    return reading

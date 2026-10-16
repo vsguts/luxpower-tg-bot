@@ -202,7 +202,7 @@ def test_restart_continues_from_stored_state():
 def test_audience():
     assert Event(EventType.GRID_LOST, at(0)).audience == Audience.SUBSCRIBERS
     assert Event(EventType.GEN_STARTED, at(0)).audience == Audience.JOURNAL
-    assert Event(EventType.DONGLE_DOWN, at(0)).audience == Audience.ADMIN
+    assert Event(EventType.DEVICE_DOWN, at(0)).audience == Audience.ADMIN
 
 
 def test_payload():

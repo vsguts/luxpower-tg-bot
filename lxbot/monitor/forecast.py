@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from lxbot.luxpower.registers import Snapshot
+from lxbot.device.snapshot import Snapshot
 
 # A trend over a few minutes or a single percent is noise, not a rate.
 MIN_TREND_TIME = timedelta(minutes=30)

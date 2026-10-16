@@ -52,7 +52,7 @@ async def test_subscriber_events_go_to_approved_subscribers(db, subscribers):
 
 async def test_admin_events_go_to_admin_only(db, subscribers):
     sender = FakeSender()
-    await deliver(make_notifier(sender, db), [Event(EventType.DONGLE_DOWN, at(0))])
+    await deliver(make_notifier(sender, db), [Event(EventType.DEVICE_DOWN, at(0))])
     assert [chat_id for chat_id, _ in sender.sent] == [ADMIN]
 
 

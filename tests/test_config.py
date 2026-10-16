@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from lxbot.config import ConfigError, settings_from_env
+from lxbot.config import ConfigError, ecoflow_config_from_env, settings_from_env
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.service import DEFAULT_URL
 from tests.fixtures import DONGLE_SERIAL, INVERTER_SERIAL
@@ -169,3 +169,25 @@ def test_battery_defaults_and_overrides():
 def test_bad_battery_values_are_named(name, value):
     with pytest.raises(ConfigError, match=name):
         settings_from_env(ENV | {"BATTERY_CAPACITY_WH": "16000", name: value})
+
+
+def test_ecoflow_config_defaults_to_the_european_cloud():
+    config = ecoflow_config_from_env({
+        "ECOFLOW_ACCESS_KEY": " access ",
+        "ECOFLOW_SECRET_KEY": "secret",
+        "ECOFLOW_SERIAL": "DCABZ0000000001",
+    })
+    assert (config.access_key, config.secret_key, config.serial) == ("access", "secret", "DCABZ0000000001")
+    assert config.api_url == "https://api-e.ecoflow.com"
+
+
+def test_ecoflow_api_url_override_drops_the_trailing_slash():
+    env = {"ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": "s", "ECOFLOW_SERIAL": "x"}
+    assert ecoflow_config_from_env(env | {"ECOFLOW_API_URL": "https://api-a.ecoflow.com/"}).api_url == (
+        "https://api-a.ecoflow.com"
+    )
+
+
+def test_ecoflow_blank_credentials_are_missing():
+    with pytest.raises(ConfigError, match="ECOFLOW_SECRET_KEY"):
+        ecoflow_config_from_env({"ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": " ", "ECOFLOW_SERIAL": "x"})

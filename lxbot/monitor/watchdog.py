@@ -2,11 +2,11 @@ from datetime import datetime, timedelta
 
 from lxbot.monitor.detector import Event, EventType
 
-DONGLE_DOWN_AFTER = timedelta(minutes=5)
+DEVICE_DOWN_AFTER = timedelta(minutes=5)
 
 
-class DongleWatch:
-    def __init__(self, down_after: timedelta = DONGLE_DOWN_AFTER):
+class DeviceWatch:
+    def __init__(self, down_after: timedelta = DEVICE_DOWN_AFTER):
         self._down_after = down_after
         self._failing_since: datetime | None = None
         self._down_reported = False
@@ -16,7 +16,7 @@ class DongleWatch:
         if not self._down_reported:
             return []
         self._down_reported = False
-        return [Event(EventType.DONGLE_UP, now)]
+        return [Event(EventType.DEVICE_UP, now)]
 
     def failure(self, now: datetime) -> list[Event]:
         if self._failing_since is None:
@@ -24,4 +24,4 @@ class DongleWatch:
         if self._down_reported or now - self._failing_since < self._down_after:
             return []
         self._down_reported = True
-        return [Event(EventType.DONGLE_DOWN, self._failing_since)]
+        return [Event(EventType.DEVICE_DOWN, self._failing_since)]
