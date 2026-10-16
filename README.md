@@ -76,6 +76,30 @@ docker compose start bot
 Check: SOC, battery voltage, battery charge/discharge, load, PV, grid voltage, generator voltage,
 `grid_present`, `gen_running`. Fix `lxbot/luxpower/registers.py` if anything disagrees.
 
+## EcoFlow Delta Pro (in progress)
+
+EcoFlow support reads the station through the EcoFlow cloud. Credentials come from the
+[EcoFlow developer portal](https://developer-eu.ecoflow.com): sign in with the account the station is
+bound to, apply for developer access, then create an Access Key / Secret Key pair. The serial number
+is in the EcoFlow app under the device's settings. Put them into `.env`:
+
+```bash
+ECOFLOW_ACCESS_KEY=
+ECOFLOW_SECRET_KEY=
+ECOFLOW_SERIAL=
+# Optional: https://api-a.ecoflow.com for accounts registered in the Americas
+ECOFLOW_API_URL=https://api-e.ecoflow.com
+```
+
+The Secret Key controls the station, not just reads it: keep it out of chats and repositories.
+
+Capture what the cloud reports, in the same three situations: grid on, grid off, solar charging.
+The device state goes to the terminal; the file holds only the quota JSON:
+
+```bash
+docker compose run --rm -T bot python -m tools.dump_ecoflow > delta-pro-grid-on.json
+```
+
 ## Development
 
 ```bash
