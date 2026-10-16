@@ -116,7 +116,8 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
         return
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
-    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule))
+    battery = settings.thresholds.battery
+    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery))
 
 
 @router.message(Command("stop"))
@@ -147,3 +148,16 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
         return
     subscriber = await subscriptions.remove(db, callback_data.chat_id)
     await query.answer(texts.removed_text(subscriber.name) if subscriber else texts.NOT_FOUND)
+
+
+# Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.
+@router.message()
+async def on_other(message: Message, db: Database, settings: Settings) -> None:
+    subscriber = await db.get_subscriber(message.chat.id)
+    if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
+        admin = message.chat.id == settings.admin_chat_id
+        await message.answer(texts.unsupported_text(admin), reply_markup=status_keyboard())
+    elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
+        await message.answer(texts.REQUEST_PENDING)
+    else:
+        await message.answer(texts.NOT_SUBSCRIBED)

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from lxbot.config import ConfigError, settings_from_env
+from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.service import DEFAULT_URL
 from tests.fixtures import DONGLE_SERIAL, INVERTER_SERIAL
 
@@ -142,3 +143,29 @@ def test_schedule_group_must_look_like_a_queue(value):
 def test_digest_times_take_no_time_zone(name, value):
     with pytest.raises(ConfigError, match=name):
         settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
+
+
+def test_battery_forecast_is_off_without_a_capacity():
+    assert settings_from_env(ENV).thresholds.battery is None
+
+
+def test_battery_defaults_and_overrides():
+    assert settings_from_env(ENV | {"BATTERY_CAPACITY_WH": "16000"}).thresholds.battery == BatteryConfig(16000, 5)
+    env = ENV | {"BATTERY_CAPACITY_WH": "10240", "BATTERY_RESERVE_SOC": "10"}
+    assert settings_from_env(env).thresholds.battery == BatteryConfig(10240, 10)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("BATTERY_CAPACITY_WH", "-5"),
+        ("BATTERY_CAPACITY_WH", "lots"),
+        ("BATTERY_CAPACITY_WH", "nan"),
+        ("BATTERY_RESERVE_SOC", "100"),
+        ("BATTERY_RESERVE_SOC", "-1"),
+        ("BATTERY_RESERVE_SOC", "five"),
+    ],
+)
+def test_bad_battery_values_are_named(name, value):
+    with pytest.raises(ConfigError, match=name):
+        settings_from_env(ENV | {"BATTERY_CAPACITY_WH": "16000", name: value})
