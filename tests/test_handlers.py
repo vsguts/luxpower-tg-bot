@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from aiogram.enums import ContentType
 from aiogram.types import Message
 
 from lxbot.bot import texts
@@ -187,7 +189,19 @@ async def test_status_shows_the_battery_forecast(db):
     assert "⏳ Вистачить: ~8 год при 1.1 кВт" in msg.answer.await_args.args[0]
 
 
-def test_service_messages_get_no_reply():
+@pytest.mark.parametrize(
+    ("content_type", "answered"),
+    [
+        (ContentType.TEXT, True),
+        (ContentType.STICKER, True),
+        (ContentType.PHOTO, True),
+        (ContentType.VOICE, True),
+        (ContentType.PINNED_MESSAGE, False),
+        (ContentType.MESSAGE_AUTO_DELETE_TIMER_CHANGED, False),
+        (ContentType.WRITE_ACCESS_ALLOWED, False),
+    ],
+)
+def test_the_catch_all_answers_only_what_a_person_sent(content_type, answered):
     (catch_all,) = [h for h in router.message.handlers if h.callback is on_other]
-    pinned = SimpleNamespace(pinned_message=object())
-    assert not all(f.callback(pinned) for f in catch_all.filters)
+    update = SimpleNamespace(content_type=content_type)
+    assert all(f.callback(update) for f in catch_all.filters) is answered

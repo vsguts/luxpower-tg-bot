@@ -103,3 +103,9 @@ def test_an_old_row_restored_mid_outage_starts_the_stretch_now():
     del old["drain_soc"], old["drain_since"]
     state, _ = run(off(720, 1, soc=50), State.from_dict(old))
     assert (state.drain_soc, state.drain_since) == (50, at(720))
+
+
+def test_a_one_off_high_reading_while_discharging_keeps_the_stretch():
+    state, _ = run([make_snapshot(0)] + off(1, 3, soc=60))
+    state, _ = run(off(4, 1, soc=100) + off(5, 1, soc=59), state)
+    assert (state.drain_soc, state.drain_since) == (60, at(3))
