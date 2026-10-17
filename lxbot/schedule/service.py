@@ -374,9 +374,14 @@ class ScheduleService:
             return None
         # Announced as missing at 22:00: it goes out whenever it settles before the morning digest. Never
         # announced at all (the source was down at 22:00): only a night outage cannot wait for 09:00.
-        if digests.pending == today or clock < QUIET_UNTIL:
+        if digests.pending == today or (clock < QUIET_UNTIL and self._outage_before_morning(today)):
             return today
         return None
+
+    def _outage_before_morning(self, day: date) -> bool:
+        schedule = self._schedule.day(day) if self._schedule else None
+        morning = datetime.combine(day, self._config.today_at, self._tz)
+        return schedule is not None and any(outage.start < morning for outage in schedule.outages)
 
     def _evening_events(self, now: datetime) -> list[Event]:
         target = self._evening_target(now)

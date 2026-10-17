@@ -540,3 +540,12 @@ async def test_an_old_digest_row_written_late_in_the_evening_keeps_today_announc
     await tick_through(service, at(21, 30), at(22, 30), step=timedelta(minutes=5))
     assert types(sink) == [EventType.SCHEDULE_CHANGED]
     assert sink.events[0].schedule.day == TODAY
+
+
+async def test_a_night_start_leaves_a_day_without_morning_outages_to_the_digest(db):
+    # A bot (re)started at 02:00 with no announcement for today: only an outage before 09:00 is urgent.
+    service, sink, _ = await make_service(db, DOC)
+    await tick_through(service, at(2, 0), at(9, 15))
+    assert types(sink) == [EventType.SCHEDULE_TODAY]
+    assert sink.events[0].at == at(9, 0)
+    assert sink.events[0].silent is False

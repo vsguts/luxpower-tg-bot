@@ -131,7 +131,7 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     if config.pending_at < EVENING_FROM:
         raise ConfigError(f"SCHEDULE_PENDING_AT must be {evening} or later")
     if config.settle > SETTLE_MAX:
-        raise ConfigError(f"SCHEDULE_SETTLE_MINUTES must be at most {SETTLE_MAX.seconds // 60}")
+        raise ConfigError(f"SCHEDULE_SETTLE_MINUTES must be at most {int(SETTLE_MAX.total_seconds() // 60)}")
     return config
 
 
