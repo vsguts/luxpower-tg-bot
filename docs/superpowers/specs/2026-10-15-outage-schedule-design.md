@@ -1,6 +1,6 @@
 # Planned outage schedule — design
 
-Date: 2026-10-15. Status: approved design, implementation not started.
+Date: 2026-10-15, revised 2026-10-18 (settled announcements). Status: implemented.
 Builds on `2026-10-15-luxpower-tg-bot-design.md` (the running bot).
 
 ## Goal
@@ -11,14 +11,13 @@ plan-vs-actual on every grid change, and the next planned change in `/status`.
 ### Features
 
 1. 09:00: today's schedule to all subscribers.
-2. 21:00: tomorrow's schedule. If DTEK has not published it yet: "not published yet", and a separate
-   message as soon as it appears.
+2. Tomorrow's schedule as soon as DTEK publishes it and it has settled (revised 2026-10-18, see
+   "Schedule service"). Nothing by 22:00: "not published yet", and a separate message once it appears.
 3. Grid lost: say whether it matches the schedule (late / early / on time / off schedule) and when the
    power is expected back.
 4. Grid restored: say whether it matches the schedule and when the next planned outage is.
 5. `/status`: the next planned change (inside a planned outage: until when; otherwise: the next outage).
-6. Today's schedule changed after its digest went out (or tomorrow's after 21:00): a short notice with the
-   new schedule.
+6. A day's schedule changed after it was announced: a short notice with the new schedule.
 
 ### Out of scope
 
@@ -120,7 +119,7 @@ Grid messages gain lines from the attached match, under the existing text:
 - No later outage known: "📅 Відключень за графіком більше не заплановано".
 - Possible intervals: "⏱ За можливим відключенням з 18:00 — …".
 
-Digest (09:00 today, 21:00 tomorrow):
+Digest (09:00 today; tomorrow once it settles):
 
 ```
 📅 Графік на сьогодні · четвер, 16 жовтня · черга 3.2
@@ -131,7 +130,7 @@ Digest (09:00 today, 21:00 tomorrow):
 ```
 
 - No outages: "✅ Відключень не заплановано".
-- Tomorrow missing at 21:00: "⏳ Графік на завтра ще не опубліковано". When it appears later:
+- Tomorrow missing at 22:00: "⏳ Графік на завтра ще не опубліковано". When it appears later:
   "📅 Графік на завтра опубліковано" plus the digest body.
 - Changed: "🔄 Графік на сьогодні змінився" (or "на завтра") plus the digest body.
 - `/status` line:
@@ -148,22 +147,29 @@ Digest (09:00 today, 21:00 tomorrow):
 - **Persistence:**
   - the last good schedule (its days with normalized outages, the fetch time and the source metadata) is
     stored in the `state` table under `schedule`;
-  - the digest flags are stored under `schedule-digests` (the day of the last morning digest, the day
-    covered by the last evening digest, and the pending "not published" day).
+  - the digest flags are stored under `schedule-digests`: the day of the last morning digest, the pending
+    "not published" day, and per announced day the fingerprint of what was announced.
   - On start the service loads them, so a restart without internet still knows the schedule and does not
     resend digests.
-- **Digests** are clock-driven: a check every minute in local time.
-  - Today's digest is due from 09:00 until 21:00 if not sent yet (a late start still sends it).
-  - Tomorrow's digest is due from 21:00 until 24:00. If tomorrow is missing then, the "not published"
-    notice is sent and a pending flag is stored. The first fetch that has tomorrow before midnight sends
-    the "опубліковано" digest. After midnight, the 09:00 digest covers it.
-  - A digest is sent from the freshest schedule: if the last fetch is older than 15 min, fetch first
-    (failure: use what is stored).
-- **Changes:** after a successful fetch, every day whose normalized outages differ from the stored ones is
-  saved.
-  - A notice goes out only if that day's digest (today's or tomorrow's) has already been sent; before
-    that, the digest itself carries the new schedule.
-  - A change with no outages on either side is not a change.
+- **Why not a fixed evening time** (revised 2026-10-18 from the source history, 8-17 October): DTEK
+  published tomorrow's schedule for queue 3.2 between 19:33 and 20:47 on most evenings, once only at
+  00:38, and once as an empty day at 21:03 that was filled at 21:18.
+- **Settling:** the service remembers, per day, when the current version of its outages first appeared.
+  A version is announced once it has held for `SCHEDULE_SETTLE_MINUTES` (20), or 45 min after the churn
+  began if DTEK keeps editing.
+- **Today's digest** is due from `DIGEST_TODAY_AT` (09:00) until 18:00 if not sent yet. It is sent from
+  the freshest schedule (refetch if the last fetch is older than 15 min; failure: use what is stored).
+  Outages already over are struck through, and the total says what is still ahead.
+- **Tomorrow:** from 18:00 the service polls every 5 min (until 01:00) and announces tomorrow once its
+  version has settled. With nothing by `SCHEDULE_PENDING_AT` (22:00) and a healthy source, it sends "не
+  опубліковано" once; the schedule then goes out as "опубліковано" whenever it settles. One that only
+  settles after midnight goes out as today's before 09:00 (and replaces the 09:00 digest), also when no
+  "не опубліковано" went out (the source was down at 22:00).
+- **Changes:** what the family was told is kept per day as a fingerprint of its outages (an evening
+  announcement carries over past midnight). When the schedule differs from it and the new version has
+  settled, a "змінився" notice goes out.
+- **Quiet hours:** schedule messages and source-health alerts between 23:00 and 07:00 are sent with
+  `disable_notification`; grid and battery alerts never are.
 - **Source health:** "down" when the fetch fails, `lastUpdateStatus.ok` is false, or `lastUpdated` is older
   than 1 h, continuously for 1 h.
   - The admin gets one "не оновлюється" message, and one "знову оновлюється" on recovery.
@@ -192,7 +198,8 @@ Digest (09:00 today, 21:00 tomorrow):
 | `SCHEDULE_POLL_INTERVAL` | `900` | seconds between fetches |
 | `SCHEDULE_MATCH_WINDOW` | `30` | minutes of tolerance for "on schedule" |
 | `DIGEST_TODAY_AT` | `09:00` | local time of today's digest |
-| `DIGEST_TOMORROW_AT` | `21:00` | local time of tomorrow's digest |
+| `SCHEDULE_PENDING_AT` | `22:00` | "not published yet" if tomorrow is still missing (18:00 or later) |
+| `SCHEDULE_SETTLE_MINUTES` | `20` | how long a version must hold before it is announced |
 
 Malformed values raise `ConfigError` naming the variable (as for the existing settings).
 
@@ -212,7 +219,7 @@ Malformed values raise `ConfigError` naming the variable (as for the existing se
 - **Comparison:** table-driven: late, early, on time, off schedule, at the edges of the window, a possible
   interval, an interval crossing midnight, the next outage today, tomorrow and none.
 - **Service with a fake clock and a fake source:**
-  - the 09:00 and 21:00 digests;
+  - the 09:00 digest and the settled announcement of tomorrow;
   - a late start;
   - no resend after a restart;
   - tomorrow pending and then published;

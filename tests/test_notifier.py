@@ -87,3 +87,15 @@ async def test_publish_does_not_wait_for_delivery(db, subscribers):
     await asyncio.wait_for(notifier.publish([Event(EventType.GRID_LOST, at(1), 80, at(1) - at(0))]), 1)
     worker.cancel()
     assert [e.type for e in await db.recent_events()] == ["grid_lost"]
+
+
+async def test_silent_events_are_sent_without_a_sound(db, subscribers):
+    calls = []
+
+    class RecordingSender:
+        async def send_message(self, chat_id: int, text: str, **kwargs):
+            calls.append(kwargs.get("disable_notification"))
+
+    events = [Event(EventType.BATTERY_LOW, at(0), 30), Event(EventType.BATTERY_LOW, at(1), 29, silent=True)]
+    await deliver(make_notifier(RecordingSender(), db), events)
+    assert calls == [False, False, True, True]
