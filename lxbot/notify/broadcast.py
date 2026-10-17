@@ -32,7 +32,7 @@ class Notifier:
         self._admin_chat_id = admin_chat_id
         self._tz = tz
         self._retry_base = retry_base
-        self._queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[int, str, bool]] = asyncio.Queue()
 
     async def publish(self, events: Sequence[Event]) -> None:
         for event in events:
@@ -41,13 +41,13 @@ class Notifier:
             if text is None:
                 continue
             for chat_id in await self._recipients(event.audience):
-                self._queue.put_nowait((chat_id, text))
+                self._queue.put_nowait((chat_id, text, event.silent))
 
     async def run(self) -> None:
         while True:
-            chat_id, text = await self._queue.get()
+            chat_id, text, silent = await self._queue.get()
             try:
-                await self._deliver(chat_id, text)
+                await self._deliver(chat_id, text, silent)
             except Exception:
                 log.exception("dropping a message to %s", chat_id)
             finally:
@@ -61,12 +61,12 @@ class Notifier:
             return [self._admin_chat_id]
         return [s.chat_id for s in await self._db.subscribers(SubscriberStatus.APPROVED)]
 
-    async def _deliver(self, chat_id: int, text: str) -> None:
+    async def _deliver(self, chat_id: int, text: str, silent: bool = False) -> None:
         # Keep retrying network failures: the text carries the event time, so late is still useful.
         delay = self._retry_base
         while True:
             try:
-                await self._sender.send_message(chat_id=chat_id, text=text)
+                await self._sender.send_message(chat_id=chat_id, text=text, disable_notification=silent)
                 return
             except TelegramForbiddenError:
                 log.info("chat %s blocked the bot; marking inactive", chat_id)

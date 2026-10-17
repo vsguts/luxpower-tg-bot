@@ -124,19 +124,34 @@ def _date_title(day: date) -> str:
     return f"{_WEEKDAYS[day.weekday()]}, {day.day} {_MONTHS[day.month - 1]}"
 
 
-def day_schedule_text(title: str, schedule: DaySchedule, tz: tzinfo, icon: str = "📅") -> str:
+def day_schedule_text(
+    title: str, schedule: DaySchedule, tz: tzinfo, icon: str = "📅", now: datetime | None = None
+) -> str:
     lines = [f"{icon} <b>{title}</b> · {_date_title(schedule.day)} · черга {schedule.label}"]
     if not schedule.outages:
         lines.append("✅ Відключень не заплановано")
         return "\n".join(lines)
     for outage in schedule.outages:
         if outage.certain:
-            lines.append(f"🕐 {format_range(outage, tz)} ({_approx_hours(outage.duration)})")
+            text, emoji = f"{format_range(outage, tz)} ({_approx_hours(outage.duration)})", "🕐"
         else:
-            lines.append(f"❔ можливо {format_range(outage, tz)}")
-    if schedule.certain_total:
-        lines.append(f"Без світла: {format_duration(schedule.certain_total)}")
+            text, emoji = f"можливо {format_range(outage, tz)}", "❔"
+        # A morning digest can list outages that are already over: keep them for the picture, struck through.
+        passed = now is not None and outage.end <= now
+        lines.append(f"{emoji} <s>{text}</s>" if passed else f"{emoji} {text}")
+    total = schedule.certain_total
+    if total:
+        lines.append(f"Без світла: {format_duration(total)}{_still_ahead(schedule, now, total)}")
     return "\n".join(lines)
+
+
+def _still_ahead(schedule: DaySchedule, now: datetime | None, total: timedelta) -> str:
+    if now is None:
+        return ""
+    ahead = sum((o.end - max(o.start, now) for o in schedule.outages if o.certain and o.end > now), timedelta())
+    if ahead == total:
+        return ""
+    return f" · ще попереду {format_duration(ahead)}" if ahead else " · усі вже минули"
 
 
 def schedule_status_line(schedule: Schedule, now: datetime, tz: tzinfo) -> str:
@@ -207,7 +222,7 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
 
 
 def _digest_text(title: str, event: Event, tz: tzinfo, icon: str = "📅") -> str:
-    text = day_schedule_text(title, event.schedule, tz, icon)
+    text = day_schedule_text(title, event.schedule, tz, icon, now=event.at)
     if event.source_updated is None:
         return text
     return f"{text}\n⚠️ Дані могли застаріти: джерело оновлювалось {event.source_updated.astimezone(tz):%d.%m %H:%M}"

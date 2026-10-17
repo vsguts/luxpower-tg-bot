@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, timedelta
+from datetime import UTC, date, timedelta
 
 import pytest
 
@@ -241,3 +241,33 @@ def test_payload_includes_schedule_and_match_only_when_set():
     payload = rich.to_payload()
     assert payload["schedule"] == TODAY_SCHEDULE.to_dict()
     assert payload["match"] == ScheduleMatch(MatchKind.LOST).to_payload()
+
+
+def test_a_morning_digest_strikes_out_what_has_passed():
+    night = Outage(local(2026, 10, 17, 0), local(2026, 10, 17, 2))
+    morning = Outage(local(2026, 10, 17, 8, 30), local(2026, 10, 17, 12))
+    evening = Outage(local(2026, 10, 17, 18, 30), local(2026, 10, 17, 22, 30))
+    day = DaySchedule(GROUP, date(2026, 10, 17), (night, morning, evening))
+    event = Event(EventType.SCHEDULE_TODAY, local(2026, 10, 17, 9), schedule=day)
+    assert texts.event_text(event, KYIV).splitlines()[1:] == [
+        "🕐 <s>з 00:00 до 02:00 (~2 год)</s>",
+        "🕐 з 08:30 до 12:00 (~3.5 год)",
+        "🕐 з 18:30 до 22:30 (~4 год)",
+        "Без світла: 9 год 30 хв · ще попереду 7 год",
+    ]
+
+
+def test_a_digest_after_every_outage_says_so():
+    day = DaySchedule(GROUP, TODAY, (MORNING,))
+    event = Event(EventType.SCHEDULE_CHANGED, local(2026, 10, 15, 16), schedule=day)
+    assert texts.event_text(event, KYIV).splitlines()[1:] == [
+        "🕐 <s>з 11:00 до 15:00 (~4 год)</s>",
+        "Без світла: 4 год · усі вже минули",
+    ]
+
+
+def test_tomorrows_digest_has_nothing_struck_out():
+    event = Event(EventType.SCHEDULE_TOMORROW, local(2026, 10, 14, 21), schedule=TODAY_SCHEDULE)
+    text = texts.event_text(event, KYIV)
+    assert "<s>" not in text
+    assert text.splitlines()[-1] == "Без світла: 7 год 30 хв"
