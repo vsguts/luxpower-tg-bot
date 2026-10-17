@@ -484,7 +484,12 @@ async def test_a_broken_schedule_row_starts_without_a_schedule(db, caplog):
 
 @pytest.mark.parametrize(
     ("key", "row"),
-    [(DIGESTS_KEY, {"today": "not a date"}), (HEALTH_KEY, {"failing_since": 7}), (HEALTH_KEY, [1, 2])],
+    [
+        (DIGESTS_KEY, {"today": "not a date"}),
+        (DIGESTS_KEY, {"today": None, "announced": ["2026-10-15"]}),
+        (HEALTH_KEY, {"failing_since": 7}),
+        (HEALTH_KEY, [1, 2]),
+    ],
 )
 async def test_a_broken_state_row_starts_that_part_empty(db, key, row):
     await db.save_state(key, row)
@@ -502,3 +507,36 @@ async def test_an_old_digest_row_counts_its_evening_announcement(db):
     stored = await db.load_state(DIGESTS_KEY)
     assert set(stored) == {"today", "pending", "announced"}
     assert "2026-10-16" in stored["announced"]
+
+
+async def test_a_schedule_that_settles_after_midnight_without_a_pending_notice_goes_out_at_night(db):
+    # The source was down at 22:00 (no "не опубліковано"), came back at 23:50 with a night outage.
+    night_first = make_document({TODAY: TODAY_OFF, TOMORROW: {1: "no", 2: "no"}})
+    down = ScheduleSourceError("down")
+    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, *[down] * 46, night_first)
+    await tick_through(service, at(20, 0), at(23, 45), step=timedelta(minutes=5))
+    assert EventType.SCHEDULE_TOMORROW_PENDING not in types(sink)
+    await tick_through(service, at(23, 50), at(0, 30, day=16), step=timedelta(minutes=5))
+    announced = [e for e in sink.events if e.type == EventType.SCHEDULE_TODAY]
+    assert len(announced) == 1
+    assert announced[0].schedule.day == TOMORROW
+    assert announced[0].silent is True
+    await tick_through(service, at(9, 0, day=16), at(9, 15, day=16))
+    assert len([e for e in sink.events if e.type == EventType.SCHEDULE_TODAY]) == 1
+
+
+async def test_the_morning_digest_absorbs_a_change_that_settles_at_the_same_time(db):
+    service, sink, _ = await make_service(db, *[DOC] * 13, *[DOC_TODAY_CHANGED] * 40)
+    await tick_through(service, at(18, 0, day=14), at(19, 0, day=14), step=timedelta(minutes=5))
+    await tick_through(service, at(8, 40), at(9, 0), step=timedelta(minutes=5))
+    today_events = [e.type for e in sink.events if e.at >= at(8, 40)]
+    assert today_events == [EventType.SCHEDULE_TODAY]
+    assert sink.events[-1].schedule.outages == (Outage(at(15), at(19)),)
+
+
+async def test_an_old_digest_row_written_late_in_the_evening_keeps_today_announced(db):
+    await db.save_state(DIGESTS_KEY, {"today": "2026-10-15", "tomorrow": "2026-10-16", "pending": None})
+    service, sink, _ = await make_service(db, DOC, DOC_TODAY_CHANGED)
+    await tick_through(service, at(21, 30), at(22, 30), step=timedelta(minutes=5))
+    assert types(sink) == [EventType.SCHEDULE_CHANGED]
+    assert sink.events[0].schedule.day == TODAY

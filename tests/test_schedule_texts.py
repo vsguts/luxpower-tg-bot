@@ -271,3 +271,12 @@ def test_tomorrows_digest_has_nothing_struck_out():
     text = texts.event_text(event, KYIV)
     assert "<s>" not in text
     assert text.splitlines()[-1] == "Без світла: 7 год 30 хв"
+
+
+def test_still_ahead_ignores_the_seconds_of_now():
+    night = Outage(local(2026, 10, 17, 0), local(2026, 10, 17, 2))
+    evening = Outage(local(2026, 10, 17, 18, 30), local(2026, 10, 17, 22, 30))
+    day = DaySchedule(GROUP, date(2026, 10, 17), (night, evening))
+    now = local(2026, 10, 17, 1).replace(second=17)
+    event = Event(EventType.SCHEDULE_TODAY, now, schedule=day)
+    assert texts.event_text(event, KYIV).splitlines()[-1] == "Без світла: 6 год · ще попереду 5 год"

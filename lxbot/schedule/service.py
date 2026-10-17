@@ -78,6 +78,8 @@ class _Digests:
         # Rows from the fixed 21:00 digest marked the evening's announcement as "tomorrow".
         if day("tomorrow") and day("tomorrow") != pending:
             announced.setdefault(day("tomorrow"), None)
+        if day("today"):
+            announced.setdefault(day("today"), None)
         return cls(today=day("today"), pending=pending, announced=announced)
 
 
@@ -157,7 +159,7 @@ class ScheduleService:
                 continue
             try:
                 restore(stored)
-            except (KeyError, TypeError, ValueError) as exc:
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
                 log.warning("ignoring the stored schedule state %r: %r", key, exc)
 
     def _restore_schedule(self, stored: dict) -> None:
@@ -195,9 +197,10 @@ class ScheduleService:
             events += await self._refresh(now)
         events += await self._health_events(now)
         if self._schedule is not None:
-            events += self._change_events(now)
+            # The digests first: a change settling in the same tick is then part of them, not a second message.
             events += self._evening_events(now)
             events += self._morning_events(now)
+            events += self._change_events(now)
             await self._save_digests()
         events = self._with_source_age(events)
         if self._quiet(now):
@@ -222,7 +225,7 @@ class ScheduleService:
     def _refresh_due(self, now: datetime) -> bool:
         clock = self._local(now).time()
         evening = clock >= EVENING_FROM or clock < EVENING_UNTIL
-        interval = EVENING_POLL if evening else self._config.poll_interval
+        interval = min(EVENING_POLL, self._config.poll_interval) if evening else self._config.poll_interval
         if self._last_attempt is None or now - self._last_attempt >= interval:
             return True
         # The morning digest goes out from the freshest data, not from a fetch up to 15 min old. The retry
@@ -269,6 +272,10 @@ class ScheduleService:
         today = self._local(now).date()
         self._versions = {day: v for day, v in self._versions.items() if day >= today - timedelta(days=1)}
 
+    def _appeared(self, day: date, now: datetime) -> datetime:
+        version = self._versions.get(day)
+        return version[2] if version else now
+
     # A version is ready once it has held for the settle time, or once the churn has lasted SETTLE_MAX.
     def _settled(self, day: date, now: datetime, churn_since: datetime) -> bool:
         version = self._versions.get(day)
@@ -285,6 +292,8 @@ class ScheduleService:
         announced = self._digests.announced
         for day in [d for d in announced if d < today - timedelta(days=1)]:
             del announced[day]
+        for day in [d for d in self._diverged if d not in announced or self._schedule.day(d) is None]:
+            del self._diverged[day]
         events = []
         for day, told in sorted(announced.items()):
             schedule = self._schedule.day(day)
@@ -360,8 +369,13 @@ class ScheduleService:
         local = self._local(now)
         if local.time() >= EVENING_FROM:
             return local.date() + timedelta(days=1)
-        if local.time() < self._config.today_at and self._digests.pending == local.date():
-            return local.date()
+        today, clock, digests = local.date(), local.time(), self._digests
+        if clock >= self._config.today_at or today in digests.announced or digests.today == today:
+            return None
+        # Announced as missing at 22:00: it goes out whenever it settles before the morning digest. Never
+        # announced at all (the source was down at 22:00): only a night outage cannot wait for 09:00.
+        if digests.pending == today or clock < QUIET_UNTIL:
+            return today
         return None
 
     def _evening_events(self, now: datetime) -> list[Event]:
@@ -378,7 +392,7 @@ class ScheduleService:
                 digests.pending = target
                 return [Event(EventType.SCHEDULE_TOMORROW_PENDING, now)]
             return []
-        if not self._settled(target, now, self._versions.get(target, ("", now, now))[2]):
+        if not self._settled(target, now, self._appeared(target, now)):
             return []
         digests.announced[target] = _fingerprint(schedule)
         if target == today:

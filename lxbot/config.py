@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import re
@@ -14,10 +15,12 @@ from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.parse import group_key
-from lxbot.schedule.service import DEFAULT_URL, EVENING_FROM, ScheduleConfig
+from lxbot.schedule.service import DEFAULT_URL, EVENING_FROM, SETTLE_MAX, ScheduleConfig
 
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 _ECOFLOW_REQUIRED = ("ECOFLOW_ACCESS_KEY", "ECOFLOW_SECRET_KEY", "ECOFLOW_SERIAL")
+
+log = logging.getLogger(__name__)
 
 T = TypeVar("T", int, float)
 _QUEUE = re.compile(r"\d+\.\d+", re.ASCII)
@@ -106,10 +109,10 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     queue = env.get("SCHEDULE_GROUP", "").strip()
     if not queue:
         return None
-    # The fixed 21:00 digest is gone: tomorrow's schedule goes out once it settles. Say so instead of
-    # silently ignoring the old setting.
+    # The fixed 21:00 digest is gone: tomorrow's schedule goes out once it settles. A stale setting must not
+    # stop the bot (and its grid alerts) from starting, so it only warns.
     if env.get("DIGEST_TOMORROW_AT"):
-        raise ConfigError("DIGEST_TOMORROW_AT is no longer used; set SCHEDULE_PENDING_AT (default 22:00) instead")
+        log.warning("DIGEST_TOMORROW_AT is no longer used; SCHEDULE_PENDING_AT (default 22:00) replaces it")
     queue = queue.removeprefix("GPV")
     if not _QUEUE.fullmatch(queue):
         raise ConfigError("SCHEDULE_GROUP must look like 3.2")
@@ -127,6 +130,8 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
         raise ConfigError(f"DIGEST_TODAY_AT must be earlier than {evening}")
     if config.pending_at < EVENING_FROM:
         raise ConfigError(f"SCHEDULE_PENDING_AT must be {evening} or later")
+    if config.settle > SETTLE_MAX:
+        raise ConfigError(f"SCHEDULE_SETTLE_MINUTES must be at most {SETTLE_MAX.seconds // 60}")
     return config
 
 

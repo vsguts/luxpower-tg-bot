@@ -131,6 +131,9 @@ def day_schedule_text(
     if not schedule.outages:
         lines.append("✅ Відключень не заплановано")
         return "\n".join(lines)
+    # Ticks carry the seconds of the process start; minute precision keeps "4 год" from reading "3 год 59 хв".
+    if now is not None:
+        now = now.replace(second=0, microsecond=0)
     for outage in schedule.outages:
         if outage.certain:
             text, emoji = f"{format_range(outage, tz)} ({_approx_hours(outage.duration)})", "🕐"

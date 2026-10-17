@@ -108,7 +108,7 @@ def test_schedule_overrides():
         ("SCHEDULE_SETTLE_MINUTES", "soon", "SCHEDULE_SETTLE_MINUTES"),
         ("SCHEDULE_SETTLE_MINUTES", "0", "SCHEDULE_SETTLE_MINUTES"),
         ("SCHEDULE_PENDING_AT", "17:00", "SCHEDULE_PENDING_AT must be 18:00 or later"),
-        ("DIGEST_TOMORROW_AT", "21:00", "SCHEDULE_PENDING_AT"),
+        ("SCHEDULE_SETTLE_MINUTES", "60", "SCHEDULE_SETTLE_MINUTES must be at most 45"),
         ("SCHEDULE_MATCH_WINDOW", "half", "SCHEDULE_MATCH_WINDOW"),
         ("SCHEDULE_POLL_INTERVAL", "often", "SCHEDULE_POLL_INTERVAL"),
         ("DIGEST_TODAY_AT", "19:00", "DIGEST_TODAY_AT must be earlier than 18:00"),
@@ -196,3 +196,9 @@ def test_ecoflow_api_url_override_drops_the_trailing_slash():
 def test_ecoflow_blank_credentials_are_missing():
     with pytest.raises(ConfigError, match="ECOFLOW_SECRET_KEY"):
         ecoflow_config_from_env({"ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": " ", "ECOFLOW_SERIAL": "x"})
+
+
+def test_the_retired_tomorrow_digest_setting_only_warns(caplog):
+    settings = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", "DIGEST_TOMORROW_AT": "21:00"})
+    assert settings.schedule.pending_at == time(22)
+    assert "DIGEST_TOMORROW_AT" in caplog.text

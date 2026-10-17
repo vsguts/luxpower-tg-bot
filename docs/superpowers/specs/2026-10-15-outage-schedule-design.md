@@ -1,6 +1,6 @@
 # Planned outage schedule — design
 
-Date: 2026-10-15. Status: approved design, implementation not started.
+Date: 2026-10-15, revised 2026-10-18 (settled announcements). Status: implemented.
 Builds on `2026-10-15-luxpower-tg-bot-design.md` (the running bot).
 
 ## Goal
@@ -163,7 +163,8 @@ Digest (09:00 today; tomorrow once it settles):
 - **Tomorrow:** from 18:00 the service polls every 5 min (until 01:00) and announces tomorrow once its
   version has settled. With nothing by `SCHEDULE_PENDING_AT` (22:00) and a healthy source, it sends "не
   опубліковано" once; the schedule then goes out as "опубліковано" whenever it settles. One that only
-  appears after midnight goes out as today's (and replaces the 09:00 digest).
+  settles after midnight goes out as today's before 09:00 (and replaces the 09:00 digest), also when no
+  "не опубліковано" went out (the source was down at 22:00).
 - **Changes:** what the family was told is kept per day as a fingerprint of its outages (an evening
   announcement carries over past midnight). When the schedule differs from it and the new version has
   settled, a "змінився" notice goes out.
