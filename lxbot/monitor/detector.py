@@ -57,6 +57,8 @@ class Event:
     match: ScheduleMatch | None = None
     source_updated: datetime | None = None
     forecast: Forecast | None = None
+    # Sent without a sound (night-time schedule messages); never set on grid or battery alerts.
+    silent: bool = False
 
     @property
     def audience(self) -> Audience:
