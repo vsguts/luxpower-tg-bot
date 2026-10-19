@@ -178,6 +178,13 @@ def test_an_empty_document_from_a_failed_update_is_an_error():
         parse_schedule(document, GROUP, KYIV)
 
 
+@pytest.mark.parametrize("data", [None, "", 0])
+def test_data_that_is_not_a_collection_is_an_error(data):
+    document = {"lastUpdateStatus": {"ok": True}, "fact": {"data": data}}
+    with pytest.raises(ScheduleParseError):
+        parse_schedule(document, GROUP, KYIV)
+
+
 def test_a_list_document_is_an_error():
     with pytest.raises(ScheduleParseError):
         parse_schedule([], GROUP, KYIV)

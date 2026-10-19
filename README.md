@@ -41,7 +41,8 @@ scrapes DTEK every ~5 minutes; it is polled at the same pace. There are no fixed
 - A new version goes out once it has held for 20 minutes (`SCHEDULE_SETTLE_MINUTES`): DTEK sometimes posts
   an empty day first and the real one minutes later.
 - An empty document (no outages planned, most of the summer) posts nothing.
-- Schedule messages between 23:00 and 07:00 arrive without a sound; grid and battery alerts always ring.
+- Schedule messages (and the admin's source alerts) between 23:00 and 07:00 arrive without a sound; grid
+  and battery alerts always ring.
 - Grid lost / restored messages say whether the change matches the schedule (±30 min) and what is
   expected next; `/status` shows the next planned change.
 - The admin is told when the source stops updating for an hour.

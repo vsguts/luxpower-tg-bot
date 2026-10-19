@@ -66,7 +66,7 @@ lxbot/schedule/
   parse.py     JSON document -> Schedule for one group (pure)
   source.py    ScheduleSource protocol + HttpScheduleSource (aiohttp, ETag)
   compare.py   pure: match a grid event to the schedule; next planned change
-  service.py   ScheduleService: poll, persist, post new and changed days (clock-driven)
+  service.py   ScheduleService: poll, persist, post new and changed days
   annotate.py  ScheduleAnnotator: EventSink wrapper adding schedule matches to grid events
 ```
 
@@ -80,7 +80,7 @@ lxbot/schedule/
 
 - `Outage(start: datetime, end: datetime, certain: bool)`, timezone-aware. `certain=False` comes from the
   `maybe*` states.
-- `DaySchedule(group: str, day: date, outages: tuple[Outage, ...])`; the group gives the digest its
+- `DaySchedule(group: str, day: date, outages: tuple[Outage, ...])`; the group gives the message its
   "черга 3.2" label. Within a day, adjacent intervals of the same
   certainty are merged.
 - `Schedule(group, days: dict[date, DaySchedule], dtek_updated: datetime | None, source_ok: bool,
@@ -165,13 +165,16 @@ Schedule update (whenever a day appears or a posted day changes):
   day goes out once its version has held for `SCHEDULE_SETTLE_MINUTES` (20), or 45 min after it appeared
   if DTEK keeps editing; a change of a posted day likewise, from when it first differed.
 - **One message:** when a day is due, the message lists every posted day and every settled new day from
-  today on. A posted day that differs but has not settled yet goes out with it too (it is shown, so it
-  counts as posted); a new day that has not settled waits for its own message. Midnight changes nothing:
+  today on. A new day that has not settled waits for its own message; a posted day that differs and has
+  not settled holds the whole message back (at most 45 min), so a message never shows a short-lived edit.
+  A day that drops out of the document settles afresh if it comes back. Midnight changes nothing:
   fingerprints are kept per date, so tomorrow's schedule does not go out again as today's.
 - **Empty document:** most of the summer DTEK publishes no days at all. With `lastUpdateStatus.ok` true
   that means no outages are planned: every day reads as one without outages, grid changes as "not on
-  schedule", nothing is posted, and the source stays healthy. Posted days that the document drops go out
-  as changed to "no outages". An empty document from a failed scrape is a parse error.
+  schedule", nothing is posted, and the source stays healthy. When a document with days turns empty, the
+  posted days go out as changed to "no outages", but only after 45 min, so a blank page at the source
+  cancels nothing. A posted day dropped from a document that still has other days is left as posted. An
+  empty document from a failed scrape, and `data` that is neither an object nor a list, are parse errors.
 - **Quiet hours:** schedule messages and source-health alerts between 23:00 and 07:00 are sent with
   `disable_notification`; grid and battery alerts never are.
 - **Source health:** "down" when the fetch fails, `lastUpdateStatus.ok` is false, or `lastUpdated` is older

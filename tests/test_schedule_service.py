@@ -268,8 +268,37 @@ async def test_a_cancelled_schedule_goes_out_as_a_change(db):
     service, sink = await make_service(db, source)
     await run(service, source, at(9), at(11))
     [event] = updates(sink)
+    # An empty document must hold for 45 min: a blank page at the source would otherwise cancel everything.
+    assert event.at == at(10, 45)
     assert event.update.changed == (TODAY, TOMORROW)
     assert [d.outages for d in event.update.days] == [(), ()]
+
+
+async def test_a_short_edit_of_a_posted_day_does_not_ride_along_with_a_new_day(db):
+    await posted_before(db, TODAY)
+    source = Timeline((at(0), DOC_TODAY_ONLY), (at(20), DOC), (at(20, 15), DOC_TODAY_CHANGED), (at(20, 25), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(21, 30))
+    [event] = updates(sink)
+    assert event.at == at(20, 25)
+    assert (event.update.published, event.update.changed) == ((TOMORROW,), ())
+    assert event.update.days[0].outages == (Outage(at(14), at(18)),)
+
+
+async def test_a_day_that_drops_out_settles_afresh_when_it_returns(db):
+    await posted_before(db, TODAY)
+    source = Timeline(
+        (at(0), DOC_TODAY_ONLY),
+        (at(20), DOC_TOMORROW_EMPTY),
+        (at(20, 10), DOC_TODAY_ONLY),
+        (at(21), DOC_TOMORROW_EMPTY),
+        (at(21, 15), DOC),
+    )
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(22, 30))
+    [event] = updates(sink)
+    assert event.at == at(21, 35)
+    assert event.update.days[1].outages == (Outage(at(11, day=16), at(15, day=16)),)
 
 
 async def test_no_repeat_after_a_restart(db):
@@ -291,8 +320,17 @@ async def test_the_digest_row_of_the_fixed_time_version_is_migrated_without_repe
     service, sink = await make_service(db, source)
     await run(service, source, at(10), at(11))
     [event] = updates(sink)
-    assert event.update.published == (TOMORROW,)
+    assert (event.update.published, event.update.changed) == ((TOMORROW,), ())
     assert set(await db.load_state(POSTED_KEY)) == {"posted"}
+
+
+async def test_the_migrated_row_posts_nothing_while_only_today_is_known(db):
+    told = fingerprint(parse_schedule(DOC_TODAY_ONLY, GROUP, KYIV).day(TODAY))
+    await db.save_state(POSTED_KEY, {"today": "2026-10-15", "pending": None, "announced": {"2026-10-15": told}})
+    source = Script(DOC_TODAY_ONLY)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(10), at(23, 55))
+    assert sink.events == []
 
 
 @pytest.mark.parametrize(
@@ -502,6 +540,22 @@ async def test_not_modified_ticks_rarely_write_to_the_card(db, monkeypatch):
     await run(service, source, at(9), at(11, 30), step=timedelta(minutes=1))
     assert writes.count(SCHEDULE_KEY) <= 3
     assert writes.count(POSTED_KEY) == 1
+
+
+async def test_a_moving_last_updated_alone_rarely_writes_to_the_card(db, monkeypatch):
+    writes = []
+    save_state = db.save_state
+
+    async def counting_save_state(key, value):
+        writes.append(key)
+        await save_state(key, value)
+
+    monkeypatch.setattr(db, "save_state", counting_save_state)
+    scrapes = [make_document({TODAY: TODAY_OFF}, last_updated=at(9) + FIVE_MINUTES * i) for i in range(31)]
+    source = Script(*scrapes)
+    service, _ = await make_service(db, source)
+    await run(service, source, at(9), at(11, 30))
+    assert writes.count(SCHEDULE_KEY) <= 3
 
 
 async def test_restart_keeps_the_fetch_time_within_an_hour(db):

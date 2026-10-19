@@ -66,6 +66,11 @@ def _posted_row(posted: dict[date, str | None]) -> dict:
     return {"posted": {day.isoformat(): told for day, told in sorted(posted.items())}}
 
 
+# lastUpdated can move with every scrape: on its own it is saved with the hourly fetch time, not each poll.
+def _content(row: dict) -> dict:
+    return {key: value for key, value in row.items() if key not in ("dtek_updated", "source_updated")}
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -151,7 +156,7 @@ class ScheduleService:
         )
         fetched_at = datetime.fromisoformat(stored["fetched_at"])
         self._schedule, self._fetched_at = schedule, fetched_at
-        self._saved_schedule, self._saved_fetched_at = self._schedule_row(), fetched_at
+        self._saved_schedule, self._saved_fetched_at = _content(self._schedule_row()), fetched_at
         self._versions = {day: (fingerprint(d), fetched_at) for day, d in schedule.days.items()}
 
     def _restore_posted(self, stored: dict) -> None:
@@ -219,16 +224,23 @@ class ScheduleService:
         stored = self._schedule.source_updated if self._schedule else None
         return stored is not None and fresh.source_updated is not None and fresh.source_updated < stored
 
-    # One message whenever a day appears or a posted day changes, with every known day from today on. A new
-    # day waits until it settles; a posted day that differs goes out with any message, settled or not.
+    # One message whenever a day appears or a posted day changes, with every known day from today on. Each
+    # waits until it settles. A new day that has not settled stays out of the message; a posted day that
+    # has not settled holds the message back, so it never shows a version that is about to change back.
     def _update_events(self, now: datetime) -> list[Event]:
         today = self._local(now).date()
         self._forget_before(today)
         schedule = self._schedule
-        shown, published, changed, due = [], [], [], False
-        for day in sorted(schedule.days.keys() | self._posted.keys()):
+        shown, published, changed, due, waiting = [], [], [], False, False
+        for day in sorted(schedule.days.keys() | self._posted.keys() | self._versions.keys()):
+            if day < today:
+                continue
             current = schedule.day(day)
-            if day < today or current is None:
+            # Missing from the document, or stood in for by an empty one without ever being published: not
+            # news. Should it come back, it settles afresh.
+            if current is None or (day not in self._posted and day not in schedule.days):
+                self._versions.pop(day, None)
+                self._diverged.pop(day, None)
                 continue
             version = fingerprint(current)
             self._note_version(day, version, now)
@@ -238,16 +250,13 @@ class ScheduleService:
                 self._diverged.pop(day, None)
                 shown.append(current)
                 continue
-            # A day stood in for by an empty document was never published, so it is not news.
-            if day not in self._posted and day not in schedule.days:
+            if not self._settled(day, now, self._diverged.setdefault(day, now)):
+                waiting = waiting or day in self._posted
                 continue
-            settled = self._settled(day, now, self._diverged.setdefault(day, now))
-            if day not in self._posted and not settled:
-                continue
-            due = due or settled
+            due = True
             shown.append(current)
             (changed if day in self._posted else published).append(day)
-        if not due:
+        if not due or waiting:
             return []
         for current in shown:
             self._posted[current.day] = fingerprint(current)
@@ -265,9 +274,11 @@ class ScheduleService:
         if known is None or known[0] != version:
             self._versions[day] = (version, now)
 
-    # A version is ready once it has held for the settle time, or once the churn has lasted SETTLE_MAX.
+    # A version is ready once it has held for the settle time, or once the churn has lasted SETTLE_MAX. An
+    # empty document cancels every posted day at once, so a blank page at the source must hold for longer.
     def _settled(self, day: date, now: datetime, churn_since: datetime) -> bool:
-        return now - self._versions[day][1] >= self._config.settle or now - churn_since >= SETTLE_MAX
+        hold = self._config.settle if self._schedule.days else SETTLE_MAX
+        return now - self._versions[day][1] >= hold or now - churn_since >= SETTLE_MAX
 
     # Updates still go out from data the source stopped refreshing, saying how old it is.
     def _outdated_since(self, now: datetime) -> datetime | None:
@@ -327,10 +338,10 @@ class ScheduleService:
             return
         row = self._schedule_row()
         lagging = self._saved_fetched_at is None or self._fetched_at - self._saved_fetched_at >= FETCHED_AT_SAVE_STEP
-        if row == self._saved_schedule and not lagging:
+        if _content(row) == self._saved_schedule and not lagging:
             return
         await self._db.save_state(SCHEDULE_KEY, row | {"fetched_at": self._fetched_at.isoformat()})
-        self._saved_schedule, self._saved_fetched_at = row, self._fetched_at
+        self._saved_schedule, self._saved_fetched_at = _content(row), self._fetched_at
 
     async def _save_posted(self) -> None:
         row = _posted_row(self._posted)
