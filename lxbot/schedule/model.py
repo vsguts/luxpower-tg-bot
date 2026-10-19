@@ -68,8 +68,27 @@ class Schedule:
     source_updated: datetime | None = None
 
     def day(self, day: date) -> DaySchedule | None:
+        # DTEK publishes no days at all while no outages are planned (most of the summer).
+        if not self.days:
+            return DaySchedule(self.group, day)
         return self.days.get(day)
 
     # Merged across midnight, so "23:00-01:00" is one interval for matching.
     def timeline(self) -> tuple[Outage, ...]:
         return merge_outages(o for d in self.days.values() for o in d.outages)
+
+
+@dataclass(frozen=True)
+class ScheduleUpdate:
+    """One message about the schedule: every known day from today on, and which of them are news."""
+
+    days: tuple[DaySchedule, ...]
+    published: tuple[date, ...] = ()
+    changed: tuple[date, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "days": [d.to_dict() for d in self.days],
+            "published": [d.isoformat() for d in self.published],
+            "changed": [d.isoformat() for d in self.changed],
+        }

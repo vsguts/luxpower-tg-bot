@@ -4,7 +4,7 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import time, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,10 +15,11 @@ from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.parse import group_key
-from lxbot.schedule.service import DEFAULT_URL, EVENING_FROM, SETTLE_MAX, ScheduleConfig
+from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
 
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 _ECOFLOW_REQUIRED = ("ECOFLOW_ACCESS_KEY", "ECOFLOW_SECRET_KEY", "ECOFLOW_SERIAL")
+_RETIRED_SCHEDULE_SETTINGS = ("DIGEST_TODAY_AT", "DIGEST_TOMORROW_AT", "SCHEDULE_PENDING_AT")
 
 log = logging.getLogger(__name__)
 
@@ -84,18 +85,6 @@ def _timezone(env: Mapping[str, str]) -> ZoneInfo:
         raise ConfigError(f"TZ is not a known time zone: {name}") from exc
 
 
-def _clock_time(env: Mapping[str, str], name: str, default: str) -> time:
-    value = env.get(name, default)
-    try:
-        moment = time.fromisoformat(value)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be HH:MM") from exc
-    # Digest times are compared with naive local clock times: an offset would fail every tick.
-    if moment.tzinfo is not None:
-        raise ConfigError(f"{name} must be HH:MM without a time zone")
-    return moment
-
-
 def battery_config_from_env(env: Mapping[str, str]) -> BatteryConfig | None:
     if not env.get("BATTERY_CAPACITY_WH", "").strip():
         return None
@@ -109,27 +98,21 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     queue = env.get("SCHEDULE_GROUP", "").strip()
     if not queue:
         return None
-    # The fixed 21:00 digest is gone: tomorrow's schedule goes out once it settles. A stale setting must not
+    # The schedule now goes out whenever it appears or changes, at no fixed time. A stale setting must not
     # stop the bot (and its grid alerts) from starting, so it only warns.
-    if env.get("DIGEST_TOMORROW_AT"):
-        log.warning("DIGEST_TOMORROW_AT is no longer used; SCHEDULE_PENDING_AT (default 22:00) replaces it")
+    for name in _RETIRED_SCHEDULE_SETTINGS:
+        if env.get(name):
+            log.warning("%s is no longer used: the schedule is posted whenever it appears or changes", name)
     queue = queue.removeprefix("GPV")
     if not _QUEUE.fullmatch(queue):
         raise ConfigError("SCHEDULE_GROUP must look like 3.2")
     config = ScheduleConfig(
         group=group_key(queue),
         url=env.get("SCHEDULE_URL") or DEFAULT_URL,
-        poll_interval=_duration(env, "SCHEDULE_POLL_INTERVAL", "900", "seconds"),
+        poll_interval=_duration(env, "SCHEDULE_POLL_INTERVAL", "300", "seconds"),
         match_window=_duration(env, "SCHEDULE_MATCH_WINDOW", "30", "minutes"),
-        today_at=_clock_time(env, "DIGEST_TODAY_AT", "09:00"),
-        pending_at=_clock_time(env, "SCHEDULE_PENDING_AT", "22:00"),
         settle=_duration(env, "SCHEDULE_SETTLE_MINUTES", "20", "minutes"),
     )
-    evening = f"{EVENING_FROM:%H:%M}"
-    if not config.today_at < EVENING_FROM:
-        raise ConfigError(f"DIGEST_TODAY_AT must be earlier than {evening}")
-    if config.pending_at < EVENING_FROM:
-        raise ConfigError(f"SCHEDULE_PENDING_AT must be {evening} or later")
     if config.settle > SETTLE_MAX:
         raise ConfigError(f"SCHEDULE_SETTLE_MINUTES must be at most {int(SETTLE_MAX.total_seconds() // 60)}")
     return config

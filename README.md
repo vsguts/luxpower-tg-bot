@@ -33,14 +33,14 @@ is no trend yet) and in the 30 % / 15 % alerts.
 
 With `SCHEDULE_GROUP` set (e.g. `3.2`), the bot follows the DTEK KREM planned outage schedule for that
 queue. The source is [outage-data-ua](https://github.com/Baskerville42/outage-data-ua) (MIT), which
-scrapes DTEK every ~5 minutes; it is polled every 15 minutes, and every 5 minutes from 18:00 to 01:00.
+scrapes DTEK every ~5 minutes; it is polled at the same pace. There are no fixed-time messages.
 
-- 09:00: today's schedule; outages that are already over are struck through.
-- Tomorrow's schedule as soon as DTEK publishes it (usually 19:30-21:00) and it has held for 20 minutes:
-  DTEK sometimes posts an empty day first and the real one minutes later. Nothing by 22:00 means
-  "не опубліковано", and the schedule follows whenever it appears (after midnight it goes out as today's).
-- "🔄 Графік змінився" when a day's schedule changes after it was announced, also once it has held for
-  20 minutes.
+- When a day's schedule appears or changes, one message lists every known day from today on and says what
+  happened ("Опубліковано графік на завтра", "🔄 Змінився графік на сьогодні"). Today's outages that are
+  already over are struck through.
+- A new version goes out once it has held for 20 minutes (`SCHEDULE_SETTLE_MINUTES`): DTEK sometimes posts
+  an empty day first and the real one minutes later.
+- An empty document (no outages planned, most of the summer) posts nothing.
 - Schedule messages between 23:00 and 07:00 arrive without a sound; grid and battery alerts always ring.
 - Grid lost / restored messages say whether the change matches the schedule (±30 min) and what is
   expected next; `/status` shows the next planned change.

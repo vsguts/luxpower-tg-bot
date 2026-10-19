@@ -161,3 +161,23 @@ def test_spring_forward_day_skips_the_missing_hour():
     ]
     assert len(day.outages) == 1
     assert day.outages[0].duration == timedelta(hours=2)
+
+
+@pytest.mark.parametrize("data", [{}, []])
+def test_an_empty_document_plans_no_outages(data):
+    document = {"lastUpdated": "2026-07-01T10:00:00Z", "lastUpdateStatus": {"ok": True}, "fact": {"data": data}}
+    schedule = parse_schedule(document, GROUP, KYIV)
+    assert schedule.days == {}
+    assert schedule.day(TODAY) == DaySchedule(GROUP, TODAY)
+    assert schedule.timeline() == ()
+
+
+def test_an_empty_document_from_a_failed_update_is_an_error():
+    document = {"lastUpdateStatus": {"ok": False}, "fact": {"data": {}}}
+    with pytest.raises(ScheduleParseError, match="failed update"):
+        parse_schedule(document, GROUP, KYIV)
+
+
+def test_a_list_document_is_an_error():
+    with pytest.raises(ScheduleParseError):
+        parse_schedule([], GROUP, KYIV)

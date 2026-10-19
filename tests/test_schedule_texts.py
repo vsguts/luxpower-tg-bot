@@ -6,7 +6,7 @@ import pytest
 from lxbot.bot import texts
 from lxbot.monitor.detector import Audience, Debounced, Event, EventType, State
 from lxbot.schedule.compare import MatchKind, ScheduleMatch
-from lxbot.schedule.model import DaySchedule, Outage, Schedule
+from lxbot.schedule.model import DaySchedule, Outage, Schedule, ScheduleUpdate
 from tests.factories import make_snapshot
 from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local
 
@@ -129,64 +129,79 @@ def test_grid_restored_message_keeps_generator_line_before_schedule():
     assert lines[4:] == ["⏱ За графіком до 15:00 — на 12 хв раніше", "📅 Відключень за графіком більше не заплановано"]
 
 
-def test_today_digest():
-    text = texts.event_text(Event(EventType.SCHEDULE_TODAY, local(2026, 10, 15, 9), schedule=TODAY_SCHEDULE), KYIV)
+TOMORROW_SCHEDULE = DaySchedule(GROUP, TOMORROW, (Outage(local(2026, 10, 16, 11), local(2026, 10, 16, 15)),))
+
+
+def update_text(at, *days, published=(), changed=(), source_updated=None):
+    update = ScheduleUpdate(tuple(days), tuple(published), tuple(changed))
+    return texts.event_text(Event(EventType.SCHEDULE_UPDATE, at, update=update, source_updated=source_updated), KYIV)
+
+
+def test_a_new_tomorrow_goes_out_with_today():
+    text = update_text(local(2026, 10, 15, 9), TODAY_SCHEDULE, TOMORROW_SCHEDULE, published=(TOMORROW,))
     assert text.splitlines() == [
-        "📅 <b>Графік на сьогодні</b> · четвер, 15 жовтня · черга 3.2",
+        "📅 <b>Опубліковано графік на завтра</b> · черга 3.2",
+        "",
+        "<b>Сьогодні</b>, четвер, 15 жовтня",
         "🕐 з 11:00 до 15:00 (~4 год)",
         "❔ можливо з 18:00 до 19:00",
         "🕐 з 20:30 до 24:00 (~3.5 год)",
         "Без світла: 7 год 30 хв",
+        "",
+        "<b>Завтра</b>, пʼятниця, 16 жовтня",
+        "🕐 з 11:00 до 15:00 (~4 год)",
+        "Без світла: 4 год",
     ]
 
 
-def test_tomorrow_digest_without_outages():
-    schedule = DaySchedule(GROUP, TOMORROW)
-    text = texts.event_text(Event(EventType.SCHEDULE_TOMORROW, local(2026, 10, 15, 21), schedule=schedule), KYIV)
-    assert text.splitlines() == [
-        "📅 <b>Графік на завтра</b> · пʼятниця, 16 жовтня · черга 3.2",
-        "✅ Відключень не заплановано",
-    ]
-
-
-def test_tomorrow_pending_and_published():
-    pending = texts.event_text(Event(EventType.SCHEDULE_TOMORROW_PENDING, local(2026, 10, 15, 21)), KYIV)
-    assert pending == "⏳ Графік на завтра ще не опубліковано"
-    schedule = DaySchedule(GROUP, TOMORROW, (Outage(local(2026, 10, 16, 11), local(2026, 10, 16, 15)),))
-    published = texts.event_text(
-        Event(EventType.SCHEDULE_TOMORROW_PUBLISHED, local(2026, 10, 15, 22), schedule=schedule), KYIV
-    )
-    assert published.splitlines()[0] == "📅 <b>Графік на завтра опубліковано</b> · пʼятниця, 16 жовтня · черга 3.2"
-
+def test_a_day_without_outages():
+    text = update_text(local(2026, 10, 15, 21), DaySchedule(GROUP, TOMORROW), published=(TOMORROW,))
+    assert text.splitlines()[2:] == ["<b>Завтра</b>, пʼятниця, 16 жовтня", "✅ Відключень не заплановано"]
 
 
 @pytest.mark.parametrize(
-    "event_type",
+    ("published", "changed", "headline"),
     [
-        EventType.SCHEDULE_TODAY,
-        EventType.SCHEDULE_TOMORROW,
-        EventType.SCHEDULE_TOMORROW_PUBLISHED,
-        EventType.SCHEDULE_CHANGED,
+        ((TODAY, TOMORROW), (), "📅 <b>Опубліковано графік на сьогодні й завтра</b> · черга 3.2"),
+        ((), (TODAY,), "🔄 <b>Змінився графік на сьогодні</b> · черга 3.2"),
+        ((), (TODAY, TOMORROW), "🔄 <b>Змінився графік на сьогодні й завтра</b> · черга 3.2"),
+        ((TOMORROW,), (TODAY,), "🔄 <b>Змінився графік на сьогодні, опубліковано на завтра</b> · черга 3.2"),
     ],
 )
-def test_digest_from_an_unhealthy_source_warns_about_its_age(event_type):
+def test_the_headline_says_what_happened(published, changed, headline):
+    text = update_text(
+        local(2026, 10, 15, 9), TODAY_SCHEDULE, TOMORROW_SCHEDULE, published=published, changed=changed
+    )
+    assert text.splitlines()[0] == headline
+
+
+def test_a_day_after_tomorrow_is_named_by_its_date():
+    day = DaySchedule(GROUP, date(2026, 10, 17))
+    text = update_text(local(2026, 10, 15, 9), day, published=(day.day,))
+    assert text.splitlines()[0] == "📅 <b>Опубліковано графік на 17.10</b> · черга 3.2"
+    assert text.splitlines()[2] == "<b>Субота, 17 жовтня</b>"
+
+
+def test_an_update_from_old_data_warns_about_its_age():
     updated = local(2026, 10, 15, 7, 5).astimezone(UTC)
-    event = Event(event_type, local(2026, 10, 15, 21), schedule=TODAY_SCHEDULE, source_updated=updated)
-    lines = texts.event_text(event, KYIV).splitlines()
-    assert lines[-1] == "⚠️ Дані могли застаріти: джерело оновлювалось 15.10 07:05"
-    assert lines[:-1] == texts.event_text(replace(event, source_updated=None), KYIV).splitlines()
+    at = local(2026, 10, 15, 21)
+    lines = update_text(at, TODAY_SCHEDULE, changed=(TODAY,), source_updated=updated).splitlines()
+    assert lines[-2:] == ["", "⚠️ Дані могли застаріти: джерело оновлювалось 15.10 07:05"]
+    assert lines[:-2] == update_text(at, TODAY_SCHEDULE, changed=(TODAY,)).splitlines()
 
 
-def test_payload_includes_source_updated_only_when_set():
-    digest = Event(EventType.SCHEDULE_TODAY, local(2026, 10, 15, 9), schedule=TODAY_SCHEDULE)
-    assert "source_updated" not in digest.to_payload()
-    stale = replace(digest, source_updated=local(2026, 10, 15, 7, 5))
+def test_payload_includes_the_update_and_source_updated_only_when_set():
+    update = ScheduleUpdate((TODAY_SCHEDULE, TOMORROW_SCHEDULE), published=(TOMORROW,))
+    event = Event(EventType.SCHEDULE_UPDATE, local(2026, 10, 15, 9), update=update)
+    payload = event.to_payload()
+    assert "source_updated" not in payload
+    assert payload["update"] == {
+        "days": [TODAY_SCHEDULE.to_dict(), TOMORROW_SCHEDULE.to_dict()],
+        "published": ["2026-10-16"],
+        "changed": [],
+    }
+    stale = replace(event, source_updated=local(2026, 10, 15, 7, 5))
     assert stale.to_payload()["source_updated"] == local(2026, 10, 15, 7, 5).isoformat()
-
-@pytest.mark.parametrize(("day", "word"), [(TODAY, "сьогодні"), (TOMORROW, "завтра")])
-def test_changed_notice(day, word):
-    event = Event(EventType.SCHEDULE_CHANGED, local(2026, 10, 15, 22), schedule=DaySchedule(GROUP, day))
-    assert texts.event_text(event, KYIV).splitlines()[0].startswith(f"🔄 <b>Графік на {word} змінився</b>")
 
 
 def test_source_health_texts_go_to_the_admin():
@@ -196,7 +211,7 @@ def test_source_health_texts_go_to_the_admin():
     up = Event(EventType.SCHEDULE_SOURCE_UP, local(2026, 10, 15, 22))
     assert texts.event_text(up, KYIV) == "✅ Графік відключень знову оновлюється"
     assert up.audience == Audience.ADMIN
-    assert Event(EventType.SCHEDULE_TODAY, local(2026, 10, 15, 9)).audience == Audience.SUBSCRIBERS
+    assert Event(EventType.SCHEDULE_UPDATE, local(2026, 10, 15, 9)).audience == Audience.SUBSCRIBERS
 
 
 @pytest.mark.parametrize(
@@ -229,27 +244,19 @@ def test_status_text_includes_the_schedule_line():
     assert texts.status_text(None, None, now, KYIV, SCHEDULE) == f"{texts.NO_DATA}\n📅 За графіком світла немає до 15:00"
 
 
-def test_payload_includes_schedule_and_match_only_when_set():
+def test_payload_includes_the_match_only_when_set():
     plain = Event(EventType.GRID_LOST, local(2026, 10, 15, 11), 80, timedelta(hours=1))
     assert set(plain.to_payload()) == {"soc", "previous_duration_s", "gen_was_running"}
-    rich = Event(
-        EventType.SCHEDULE_TODAY,
-        local(2026, 10, 15, 9),
-        schedule=TODAY_SCHEDULE,
-        match=ScheduleMatch(MatchKind.LOST),
-    )
-    payload = rich.to_payload()
-    assert payload["schedule"] == TODAY_SCHEDULE.to_dict()
-    assert payload["match"] == ScheduleMatch(MatchKind.LOST).to_payload()
+    matched = replace(plain, match=ScheduleMatch(MatchKind.LOST))
+    assert matched.to_payload()["match"] == ScheduleMatch(MatchKind.LOST).to_payload()
 
 
-def test_a_morning_digest_strikes_out_what_has_passed():
+def test_today_strikes_out_what_has_passed():
     night = Outage(local(2026, 10, 17, 0), local(2026, 10, 17, 2))
     morning = Outage(local(2026, 10, 17, 8, 30), local(2026, 10, 17, 12))
     evening = Outage(local(2026, 10, 17, 18, 30), local(2026, 10, 17, 22, 30))
     day = DaySchedule(GROUP, date(2026, 10, 17), (night, morning, evening))
-    event = Event(EventType.SCHEDULE_TODAY, local(2026, 10, 17, 9), schedule=day)
-    assert texts.event_text(event, KYIV).splitlines()[1:] == [
+    assert update_text(local(2026, 10, 17, 9), day, changed=(day.day,)).splitlines()[3:] == [
         "🕐 <s>з 00:00 до 02:00 (~2 год)</s>",
         "🕐 з 08:30 до 12:00 (~3.5 год)",
         "🕐 з 18:30 до 22:30 (~4 год)",
@@ -257,18 +264,16 @@ def test_a_morning_digest_strikes_out_what_has_passed():
     ]
 
 
-def test_a_digest_after_every_outage_says_so():
+def test_today_after_every_outage_says_so():
     day = DaySchedule(GROUP, TODAY, (MORNING,))
-    event = Event(EventType.SCHEDULE_CHANGED, local(2026, 10, 15, 16), schedule=day)
-    assert texts.event_text(event, KYIV).splitlines()[1:] == [
+    assert update_text(local(2026, 10, 15, 16), day, changed=(TODAY,)).splitlines()[3:] == [
         "🕐 <s>з 11:00 до 15:00 (~4 год)</s>",
         "Без світла: 4 год · усі вже минули",
     ]
 
 
-def test_tomorrows_digest_has_nothing_struck_out():
-    event = Event(EventType.SCHEDULE_TOMORROW, local(2026, 10, 14, 21), schedule=TODAY_SCHEDULE)
-    text = texts.event_text(event, KYIV)
+def test_tomorrow_has_nothing_struck_out():
+    text = update_text(local(2026, 10, 14, 21), TODAY_SCHEDULE, published=(TODAY,))
     assert "<s>" not in text
     assert text.splitlines()[-1] == "Без світла: 7 год 30 хв"
 
@@ -278,5 +283,4 @@ def test_still_ahead_ignores_the_seconds_of_now():
     evening = Outage(local(2026, 10, 17, 18, 30), local(2026, 10, 17, 22, 30))
     day = DaySchedule(GROUP, date(2026, 10, 17), (night, evening))
     now = local(2026, 10, 17, 1).replace(second=17)
-    event = Event(EventType.SCHEDULE_TODAY, now, schedule=day)
-    assert texts.event_text(event, KYIV).splitlines()[-1] == "Без світла: 6 год · ще попереду 5 год"
+    assert update_text(now, day, changed=(day.day,)).splitlines()[-1] == "Без світла: 6 год · ще попереду 5 год"

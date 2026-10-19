@@ -3,31 +3,66 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from lxbot.monitor.detector import EventType
-from lxbot.schedule.model import Outage
-from lxbot.schedule.service import DIGESTS_KEY, HEALTH_KEY, SCHEDULE_KEY, ScheduleConfig, ScheduleService
+from lxbot.schedule.model import DaySchedule, Outage
+from lxbot.schedule.parse import parse_schedule
+from lxbot.schedule.service import (
+    HEALTH_KEY,
+    POSTED_KEY,
+    SCHEDULE_KEY,
+    ScheduleConfig,
+    ScheduleService,
+    fingerprint,
+)
 from lxbot.schedule.source import ScheduleSourceError
 from tests.schedule_factories import GROUP, KYIV, TODAY, TOMORROW, local, make_document
 
 CONFIG = ScheduleConfig(group=GROUP)
+FIVE_MINUTES = timedelta(minutes=5)
 TODAY_OFF = {15: "no", 16: "no", 17: "no", 18: "no"}
+TODAY_LATER = {16: "no", 17: "no", 18: "no", 19: "no"}
 TOMORROW_OFF = {12: "no", 13: "no", 14: "no", 15: "no"}
 DOC = make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF})
 DOC_TODAY_ONLY = make_document({TODAY: TODAY_OFF})
-DOC_TODAY_CHANGED = make_document({TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}, TOMORROW: TOMORROW_OFF})
-DOC_TOMORROW_CHANGED = make_document({TODAY: TODAY_OFF, TOMORROW: {13: "no"}})
+DOC_TODAY_CHANGED = make_document({TODAY: TODAY_LATER, TOMORROW: TOMORROW_OFF})
 DOC_TOMORROW_EMPTY = make_document({TODAY: TODAY_OFF, TOMORROW: {}})
+# Most of the summer DTEK publishes no days at all.
+DOC_EMPTY = make_document({})
 
 
-class FakeSource:
+def at(hour, minute=0, day=15):
+    return local(2026, 10, day, hour, minute)
+
+
+class Script:
     """Returns the scripted responses in order; the last one repeats."""
 
     def __init__(self, *responses):
         self.responses = list(responses)
         self.calls = 0
+        self.now = None
 
     async def fetch(self):
         self.calls += 1
         item = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def close(self):
+        pass
+
+
+class Timeline:
+    """Serves the latest response published by the current moment, as the real source does."""
+
+    def __init__(self, *versions):
+        self.versions = versions
+        self.calls = 0
+        self.now = None
+
+    async def fetch(self):
+        self.calls += 1
+        item = [response for since, response in self.versions if since <= self.now][-1]
         if isinstance(item, Exception):
             raise item
         return item
@@ -44,234 +79,311 @@ class RecordingSink:
         self.events.extend(events)
 
 
-async def make_service(db, *responses):
+async def make_service(db, source):
     sink = RecordingSink()
-    source = FakeSource(*responses)
     service = ScheduleService(source, db, sink, CONFIG, KYIV)
     await service.load()
-    return service, sink, source
+    return service, sink
+
+
+async def run(service, source, start, end, step=FIVE_MINUTES):
+    moment = start
+    while moment <= end:
+        source.now = moment
+        await service.tick(moment)
+        moment += step
+
+
+async def posted_before(db, *days):
+    """As if these days had gone out before the test starts."""
+    await db.save_state(POSTED_KEY, {"posted": {day.isoformat(): None for day in days}})
 
 
 def types(sink):
     return [e.type for e in sink.events]
 
 
-def at(hour, minute=0, day=15):
-    return local(2026, 10, day, hour, minute)
+def updates(sink):
+    return [e for e in sink.events if e.type == EventType.SCHEDULE_UPDATE]
 
 
-async def test_morning_digest_once_at_nine(db):
-    service, sink, _ = await make_service(db, DOC)
-    await service.tick(at(8, 59))
+def days_of(event):
+    return [d.day for d in event.update.days]
+
+
+async def test_the_first_schedule_goes_out_once_it_settles(db):
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(10), at(12))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]
+    event = sink.events[0]
+    assert event.at == at(10, 20)
+    assert (event.update.published, event.update.changed) == ((TODAY, TOMORROW), ())
+    assert event.update.days[0].outages == (Outage(at(14), at(18)),)
+    assert event.silent is False
+    assert event.source_updated is None
+
+
+async def test_tomorrow_goes_out_with_today_once_it_settles(db):
+    # 9 October: tomorrow appeared at 20:03 and did not change.
+    await posted_before(db, TODAY)
+    source = Timeline((at(0), DOC_TODAY_ONLY), (at(20, 3), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(21))
+    [event] = updates(sink)
+    assert event.at == at(20, 25)
+    assert event.update.published == (TOMORROW,)
+    assert days_of(event) == [TODAY, TOMORROW]
+
+
+async def test_a_schedule_published_after_midnight_goes_out_quietly_as_today(db):
+    # 16 October: nothing all evening, the schedule for the 17th appeared at 00:38.
+    await posted_before(db, TODAY)
+    source = Timeline((at(0), DOC_TODAY_ONLY), (at(0, 38, day=16), make_document({TOMORROW: TOMORROW_OFF})))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(10, day=16))
+    [event] = updates(sink)
+    assert event.at == at(1, 0, day=16)
+    assert event.silent is True
+    assert event.update.published == (TOMORROW,)
+    assert days_of(event) == [TOMORROW]
+
+
+async def test_an_empty_day_filled_minutes_later_goes_out_once(db):
+    # 17 October: an empty day at 21:03, the real one at 21:18.
+    await posted_before(db, TODAY)
+    source = Timeline((at(0), DOC_TODAY_ONLY), (at(21, 3), DOC_TOMORROW_EMPTY), (at(21, 18), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(20), at(22, 30))
+    [event] = updates(sink)
+    assert event.at == at(21, 40)
+    assert event.update.days[1].outages == (Outage(at(11, day=16), at(15, day=16)),)
+
+
+async def test_a_change_of_a_posted_day_goes_out_once_it_settles(db):
+    await posted_before(db, TODAY, TOMORROW)
+    source = Timeline((at(0), DOC), (at(10), DOC_TODAY_CHANGED))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(12))
+    [event] = updates(sink)
+    assert event.at == at(10, 20)
+    assert (event.update.published, event.update.changed) == ((), (TODAY,))
+    assert days_of(event) == [TODAY, TOMORROW]
+    assert event.update.days[0].outages == (Outage(at(15), at(19)),)
+
+
+async def test_a_change_reverted_before_it_settles_goes_nowhere(db):
+    await posted_before(db, TODAY, TOMORROW)
+    source = Timeline((at(0), DOC), (at(10), DOC_TODAY_CHANGED), (at(10, 10), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(12))
     assert sink.events == []
-    await service.tick(at(9, 0))
-    await service.tick(at(9, 1))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-    digest = sink.events[0]
-    assert digest.at == at(9, 0)
-    assert digest.schedule.outages == (Outage(at(14), at(18)),)
 
 
-async def test_late_start_still_sends_the_morning_digest(db):
-    service, sink, _ = await make_service(db, DOC)
-    await service.tick(at(11, 0))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
+async def test_a_schedule_that_keeps_changing_goes_out_after_45_minutes(db):
+    await posted_before(db, TODAY)
+    churn = [
+        (at(20) + timedelta(minutes=10 * i), make_document({TODAY: TODAY_OFF, TOMORROW: {10 + i: "no"}}))
+        for i in range(10)
+    ]
+    source = Timeline((at(0), DOC_TODAY_ONLY), *churn)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19, 30), at(21, 30))
+    [event] = updates(sink)
+    assert event.at == at(20, 45)
 
 
-async def test_no_resend_after_restart(db):
-    first, sink, _ = await make_service(db, DOC)
-    await first.tick(at(9, 0))
-    second, second_sink, _ = await make_service(db, DOC)
-    await second.tick(at(9, 5))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
+async def test_midnight_does_not_repeat_tomorrow(db):
+    await posted_before(db, TODAY, TOMORROW)
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(22), at(2, day=16))
+    assert sink.events == []
+
+
+async def test_a_new_day_and_a_change_go_out_in_one_message(db):
+    await posted_before(db, TODAY)
+    source = Timeline((at(0), DOC_TODAY_ONLY), (at(20), DOC_TODAY_CHANGED))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(21))
+    [event] = updates(sink)
+    assert (event.update.published, event.update.changed) == ((TOMORROW,), (TODAY,))
+
+
+async def test_a_change_does_not_wait_for_a_new_day_that_has_not_settled(db):
+    await posted_before(db, TODAY)
+    source = Timeline(
+        (at(0), DOC_TODAY_ONLY),
+        (at(20), make_document({TODAY: TODAY_LATER})),
+        (at(20, 15), DOC_TODAY_CHANGED),
+    )
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(21))
+    changed, published = updates(sink)
+    assert (changed.at, changed.update.changed, days_of(changed)) == (at(20, 20), (TODAY,), [TODAY])
+    assert (published.at, published.update.published, days_of(published)) == (
+        at(20, 35),
+        (TOMORROW,),
+        [TODAY, TOMORROW],
+    )
+
+
+async def test_night_updates_are_silent_and_day_ones_are_not(db):
+    await posted_before(db, TODAY, TOMORROW)
+    night = make_document({TODAY: TODAY_LATER, TOMORROW: {**TOMORROW_OFF, 20: "no"}})
+    source = Timeline((at(0), DOC), (at(10), DOC_TODAY_CHANGED), (at(23, 30), night))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(23, 55))
+    assert [(e.at, e.silent) for e in updates(sink)] == [(at(10, 20), False), (at(23, 50), True)]
+
+
+async def test_the_source_is_polled_every_five_minutes(db):
+    source = Script(DOC)
+    service, _ = await make_service(db, source)
+    await run(service, source, at(15), at(15, 30), step=timedelta(minutes=1))
+    assert source.calls == 7
+
+
+async def test_an_empty_document_means_no_outages_and_posts_nothing(db):
+    source = Script(DOC_EMPTY)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(9, day=16), step=timedelta(minutes=15))
+    assert sink.events == []
+    assert service.current(at(12)).day(TODAY) == DaySchedule(GROUP, TODAY)
+    assert service.current(at(9, day=16)).timeline() == ()
+
+
+async def test_outages_after_a_quiet_period_go_out(db):
+    source = Timeline((at(0), DOC_EMPTY), (at(20), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(21))
+    [event] = updates(sink)
+    assert event.at == at(20, 20)
+    assert event.update.published == (TODAY, TOMORROW)
+
+
+async def test_a_cancelled_schedule_goes_out_as_a_change(db):
+    await posted_before(db, TODAY, TOMORROW)
+    source = Timeline((at(0), DOC), (at(10), DOC_EMPTY))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(11))
+    [event] = updates(sink)
+    assert event.update.changed == (TODAY, TOMORROW)
+    assert [d.outages for d in event.update.days] == [(), ()]
+
+
+async def test_no_repeat_after_a_restart(db):
+    first_source = Script(DOC)
+    first, first_sink = await make_service(db, first_source)
+    await run(first, first_source, at(10), at(10, 30))
+    second_source = Script(DOC)
+    second, second_sink = await make_service(db, second_source)
+    await run(second, second_source, at(10, 35), at(12))
+    assert len(updates(first_sink)) == 1
     assert second_sink.events == []
 
 
-async def test_evening_digest_for_tomorrow_goes_out_once_it_settles(db):
-    # 9 October: tomorrow appeared at 20:03 and did not change.
-    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, DOC_TODAY_ONLY, DOC)
-    await tick_through(service, at(19, 50), at(20, 15), step=timedelta(minutes=5))
-    assert sink.events == []
-    await tick_through(service, at(20, 20), at(20, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW]
-    assert sink.events[0].at == at(20, 20)
-    assert sink.events[0].schedule.day == TOMORROW
-    assert sink.events[0].silent is False
+async def test_the_digest_row_of_the_fixed_time_version_is_migrated_without_repeats(db):
+    # The row as the 09:00 / 22:00 digests left it on 2026-10-19: today announced, tomorrow not yet.
+    told = fingerprint(parse_schedule(DOC, GROUP, KYIV).day(TODAY))
+    await db.save_state(POSTED_KEY, {"today": "2026-10-15", "pending": None, "announced": {"2026-10-15": told}})
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(10), at(11))
+    [event] = updates(sink)
+    assert event.update.published == (TOMORROW,)
+    assert set(await db.load_state(POSTED_KEY)) == {"posted"}
 
 
-async def test_tomorrow_pending_at_ten_then_published(db):
-    service, sink, _ = await make_service(db, *[DOC_TODAY_ONLY] * 13, DOC)
-    await tick_through(service, at(21, 0), at(22, 0), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW_PENDING]
-    assert sink.events[0].at == at(22, 0)
-    await tick_through(service, at(22, 5), at(22, 40), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW_PENDING, EventType.SCHEDULE_TOMORROW_PUBLISHED]
-    assert sink.events[1].schedule.day == TOMORROW
+@pytest.mark.parametrize(
+    ("pending", "expected"),
+    [(None, []), ("2026-10-16", [(TOMORROW,)])],
+)
+async def test_an_older_digest_row_is_adopted_silently(db, pending, expected):
+    # Rows written by the fixed 21:00 digest have only dates; "tomorrow" equal to "pending" was not sent yet.
+    await db.save_state(POSTED_KEY, {"today": "2026-10-15", "tomorrow": "2026-10-16", "pending": pending})
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(21), at(23))
+    assert [e.update.published for e in updates(sink)] == expected
 
 
-async def test_published_after_midnight_goes_out_as_today_quietly(db):
-    # 16 October: nothing by 22:00, the schedule for the 17th appeared at 00:38.
-    after_midnight = make_document({TOMORROW: TOMORROW_OFF})
-    # 21:30-00:35 is 38 polls at the evening's 5-minute pace.
-    service, sink, _ = await make_service(db, *[DOC_TODAY_ONLY] * 38, after_midnight)
-    await tick_through(service, at(21, 30), at(0, 35, day=16), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW_PENDING]
-    await tick_through(service, at(0, 40, day=16), at(9, 30, day=16), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW_PENDING, EventType.SCHEDULE_TODAY]
-    published = sink.events[1]
-    assert published.at == at(1, 0, day=16)
-    assert published.schedule.day == TOMORROW
-    assert published.silent is True
+async def test_a_failed_fetch_does_not_mark_fresh_data_as_old(db):
+    await posted_before(db, TODAY)
+    before = make_document({TODAY: TODAY_OFF}, last_updated=at(18, 58))
+    fresh = make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF}, last_updated=at(19, 58))
+    source = Timeline((at(0), before), (at(20), fresh), (at(20, 10), ScheduleSourceError("blip")))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(19), at(20, 30))
+    [event] = updates(sink)
+    assert event.source_updated is None
 
 
-async def test_change_after_the_morning_digest_is_announced_once_settled(db):
-    service, sink, _ = await make_service(db, DOC, DOC_TODAY_CHANGED)
-    await service.tick(at(9, 0))
-    await tick_through(service, at(9, 15), at(9, 30))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-    await service.tick(at(9, 45))
-    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
-    assert sink.events[1].schedule.outages == (Outage(at(15), at(19)),)
-
-
-async def test_change_before_the_digest_is_silent_and_the_digest_has_it(db):
-    service, sink, _ = await make_service(db, DOC, DOC_TODAY_CHANGED)
-    await service.tick(at(8, 30))
-    await service.tick(at(8, 45))
-    await service.tick(at(9, 0))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-    assert sink.events[0].schedule.outages == (Outage(at(15), at(19)),)
-
-
-async def test_tomorrow_change_after_the_evening_digest_is_announced(db):
-    service, sink, _ = await make_service(db, *[DOC] * 13, DOC_TOMORROW_CHANGED)
-    await tick_through(service, at(18, 0), at(19, 0), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW]
-    await tick_through(service, at(19, 5), at(19, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW, EventType.SCHEDULE_CHANGED]
-    assert sink.events[1].schedule.day == TOMORROW
-
-
-async def test_placeholder_then_real_schedule_is_announced_once(db):
-    # 17 October: an empty day at 21:03, the real one at 21:18.
-    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, DOC_TOMORROW_EMPTY, DOC_TOMORROW_EMPTY, DOC_TOMORROW_EMPTY, DOC)
-    await tick_through(service, at(21, 0), at(22, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW]
-    assert sink.events[0].schedule.outages == (Outage(at(11, day=16), at(15, day=16)),)
-
-
-async def test_tomorrow_filled_after_the_evening_digest_is_announced(db):
-    service, sink, _ = await make_service(db, *[DOC_TOMORROW_EMPTY] * 13, DOC)
-    await tick_through(service, at(18, 0), at(19, 0), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW]
-    assert sink.events[0].schedule.outages == ()
-    await tick_through(service, at(19, 5), at(19, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW, EventType.SCHEDULE_CHANGED]
-
-
-async def test_a_schedule_that_keeps_changing_is_announced_after_45_minutes(db):
-    versions = [make_document({TODAY: TODAY_OFF, TOMORROW: {h: "no"}}) for h in range(10, 20)]
-    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, *[v for v in versions for _ in (0, 1)])
-    await tick_through(service, at(20, 0), at(21, 0), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW]
-    assert sink.events[0].at == at(20, 50)
-
-
-async def test_the_evening_is_polled_every_five_minutes(db):
-    service, _, source = await make_service(db, DOC)
-    await tick_through(service, at(15, 0), at(15, 30), step=timedelta(minutes=1))
-    assert source.calls == 3
-    await tick_through(service, at(18, 0), at(18, 30), step=timedelta(minutes=1))
-    assert source.calls == 3 + 7
-
-
-async def test_night_messages_are_silent_and_day_ones_are_not(db):
-    night = make_document({TODAY: TODAY_OFF, TOMORROW: {**TOMORROW_OFF, 20: "no"}})
-    service, sink, _ = await make_service(db, *[DOC] * 13, night)
-    await tick_through(service, at(18, 0), at(19, 0), step=timedelta(minutes=5))
-    await tick_through(service, at(23, 0), at(23, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW, EventType.SCHEDULE_CHANGED]
-    assert [e.silent for e in sink.events] == [False, True]
-
-
-async def test_recent_fetch_is_reused_for_the_digest(db):
-    service, sink, source = await make_service(db, DOC)
-    await service.tick(at(8, 50))
-    await service.tick(at(9, 0))
-    assert source.calls == 1
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-
-
-async def test_digest_refreshes_an_old_schedule_first(db):
-    # 08:50 fails, so at 09:00 the last good fetch is an hour old although an attempt was 10 min ago.
-    service, sink, source = await make_service(db, DOC, ScheduleSourceError("blip"), DOC_TODAY_CHANGED)
-    await service.tick(at(8, 0))
-    await service.tick(at(8, 50))
-    await service.tick(at(9, 0))
-    assert source.calls == 3
-    assert sink.events[-1].type == EventType.SCHEDULE_TODAY
-    assert sink.events[-1].schedule.outages == (Outage(at(15), at(19)),)
+async def test_an_update_from_old_data_says_how_old_it_is(db):
+    source = Script(make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF}, last_updated=at(8)))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(10), at(10, 30))
+    [event] = updates(sink)
+    assert event.source_updated == at(8)
 
 
 async def test_not_modified_keeps_the_schedule_fresh(db):
-    service, _, _ = await make_service(db, DOC, None)
-    await service.tick(at(9, 0))
-    await service.tick(at(14, 0))
-    assert service.current(at(19, 30)) is not None
+    source = Script(DOC, None)
+    service, _ = await make_service(db, source)
+    await run(service, source, at(9), at(14), step=timedelta(hours=5))
     assert service.current(at(19, 30)).day(TODAY).outages == (Outage(at(14), at(18)),)
 
 
 async def test_refresh_failure_keeps_the_last_schedule_until_it_is_stale(db):
-    service, _, _ = await make_service(db, DOC, ScheduleSourceError("down"))
-    await service.tick(at(9, 0))
-    await service.tick(at(9, 15))
+    source = Script(DOC, ScheduleSourceError("down"))
+    service, _ = await make_service(db, source)
+    await run(service, source, at(9), at(9, 15), step=timedelta(minutes=15))
     assert service.current(at(9, 16)) is not None
     assert service.current(at(15, 0)) is not None
     assert service.current(at(15, 1)) is None
 
 
 async def test_schedule_survives_a_restart_without_network(db):
-    first, _, _ = await make_service(db, DOC)
-    await first.tick(at(8, 30))
-    second, sink, _ = await make_service(db, ScheduleSourceError("down"))
+    first_source = Script(DOC)
+    first, _ = await make_service(db, first_source)
+    await run(first, first_source, at(8, 30), at(8, 30))
+    source = Script(ScheduleSourceError("down"))
+    second, sink = await make_service(db, source)
     assert second.current(at(8, 40)).day(TODAY) == first.current(at(8, 40)).day(TODAY)
-    await second.tick(at(9, 0))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
+    await run(second, source, at(9), at(9))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]
 
 
-async def test_no_schedule_no_digest(db):
-    service, sink, _ = await make_service(db, ScheduleSourceError("down"))
-    await service.tick(at(9, 0))
+async def test_no_schedule_no_update(db):
+    source = Script(ScheduleSourceError("down"))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(9, 30))
     assert sink.events == []
-    assert service.current(at(9, 0)) is None
+    assert service.current(at(9, 30)) is None
 
 
 async def test_source_down_after_an_hour_then_up(db):
-    # With no schedule and a digest due, retries are throttled to 5 min; DOWN comes from the health check at 10:00.
-    down = ScheduleSourceError("down")
-    service, sink, _ = await make_service(db, down, down, DOC)
-    await service.tick(at(9, 0))
-    await service.tick(at(9, 59))
+    source = Timeline((at(0), ScheduleSourceError("down")), (at(10, 10), DOC))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(9, 55))
     assert sink.events == []
-    await service.tick(at(10, 0))
-    assert types(sink) == [EventType.SCHEDULE_SOURCE_DOWN]
-    assert sink.events[0].at == at(9, 0)
-    await service.tick(at(10, 15))
-    assert types(sink)[1:] == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TODAY]
+    await run(service, source, at(10), at(10, 30))
+    assert types(sink) == [EventType.SCHEDULE_SOURCE_DOWN, EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_UPDATE]
+    down, up, update = sink.events
+    assert (down.at, up.at, update.at) == (at(9), at(10, 10), at(10, 30))
 
 
 async def test_source_reporting_not_ok_counts_as_down(db):
-    service, sink, _ = await make_service(db, make_document({TODAY: TODAY_OFF}, ok=False))
-    await service.tick(at(9, 0))
-    await service.tick(at(10, 0))
+    source = Script(make_document({TODAY: TODAY_OFF}, ok=False))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(10), step=timedelta(hours=1))
     assert EventType.SCHEDULE_SOURCE_DOWN in types(sink)
 
 
 async def test_stale_source_counts_as_down(db):
-    old = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 14, 0, 0, tzinfo=UTC))
-    service, sink, _ = await make_service(db, old)
-    await service.tick(at(9, 0))
-    await service.tick(at(10, 0))
+    source = Script(make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 14, 0, 0, tzinfo=UTC)))
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(10), step=timedelta(hours=1))
     assert EventType.SCHEDULE_SOURCE_DOWN in types(sink)
 
 
@@ -288,7 +400,7 @@ async def test_run_survives_an_unexpected_error(db):
         async def close(self):
             pass
 
-    times = iter([at(9, 0), at(9, 15), at(9, 30)])
+    times = iter([at(9, 0), at(9, 5), at(9, 30)])
 
     def clock():
         moment = next(times, None)
@@ -302,152 +414,78 @@ async def test_run_survives_an_unexpected_error(db):
         await service.run()
     except SystemExit:
         pass
-    assert EventType.SCHEDULE_TODAY in types(sink)
-
-
-async def test_digest_and_change_events_carry_their_day_schedule(db):
-    service, sink, _ = await make_service(db, *[DOC_TODAY_ONLY] * 2, *[DOC] * 3, DOC_TOMORROW_CHANGED)
-    await service.tick(at(9, 0))
-    await tick_through(service, at(22, 0), at(23, 30), step=timedelta(minutes=15))
-    assert types(sink) == [
-        EventType.SCHEDULE_TODAY,
-        EventType.SCHEDULE_TOMORROW_PENDING,
-        EventType.SCHEDULE_TOMORROW_PUBLISHED,
-        EventType.SCHEDULE_CHANGED,
-    ]
-    today, pending, published, changed = sink.events
-    assert pending.schedule is None
-    assert today.schedule.day == TODAY
-    assert published.schedule.day == TOMORROW
-    assert changed.schedule.day == TOMORROW
-
-
-async def test_change_during_the_night_after_the_evening_digest_is_announced(db):
-    night = make_document({TODAY: TODAY_OFF, TOMORROW: {**TOMORROW_OFF, 20: "no"}})
-    service, sink, _ = await make_service(db, *[DOC] * 13, night)
-    await tick_through(service, at(18, 0), at(19, 0), step=timedelta(minutes=5))
-    await tick_through(service, at(2, 0, day=16), at(2, 30, day=16))
-    assert types(sink) == [EventType.SCHEDULE_TOMORROW, EventType.SCHEDULE_CHANGED]
-    assert sink.events[1].schedule.day == TOMORROW
-    assert sink.events[1].silent is True
-    assert sink.events[1].schedule.outages == (
-        Outage(at(11, day=16), at(15, day=16)),
-        Outage(at(19, day=16), at(20, day=16)),
-    )
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]
 
 
 async def test_not_modified_after_a_parse_failure_still_counts_as_down(db):
     unparsable = {"lastUpdated": "2026-10-15T00:00:00Z"}
-    service, sink, _ = await make_service(db, DOC, unparsable, None)
-    moment = at(9, 0)
-    while moment <= at(15, 15):
-        await service.tick(moment)
-        moment += timedelta(minutes=15)
-    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
+    source = Script(DOC, unparsable, None)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(15, 15), step=timedelta(minutes=15))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE, EventType.SCHEDULE_SOURCE_DOWN]
     assert sink.events[1].at == at(9, 15)
     assert service.current(at(14, 59)) is not None
     assert service.current(at(15, 1)) is None
 
 
-async def test_dead_source_is_not_hammered_while_a_digest_is_due(db):
-    service, sink, source = await make_service(db, ScheduleSourceError("down"))
-    moment = at(9, 0)
-    while moment <= at(9, 30):
-        await service.tick(moment)
-        moment += timedelta(minutes=1)
-    assert source.calls <= 7
-
-
 async def test_source_down_is_remembered_across_a_restart(db):
     down = ScheduleSourceError("down")
-    first, first_sink, _ = await make_service(db, down)
-    await first.tick(at(9, 0))
-    await first.tick(at(10, 0))
+    first_source = Script(down)
+    first, first_sink = await make_service(db, first_source)
+    await run(first, first_source, at(9), at(10), step=timedelta(hours=1))
     assert types(first_sink) == [EventType.SCHEDULE_SOURCE_DOWN]
-    second, second_sink, _ = await make_service(db, down)
-    await second.tick(at(10, 15))
+    second_source = Script(down)
+    second, second_sink = await make_service(db, second_source)
+    await run(second, second_source, at(10, 15), at(10, 15))
     assert second_sink.events == []
-    third, third_sink, _ = await make_service(db, DOC)
-    await third.tick(at(10, 30))
-    assert types(third_sink) == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TODAY]
-
-
-async def tick_through(service, start, end, step=timedelta(minutes=15)):
-    moment = start
-    while moment <= end:
-        await service.tick(moment)
-        moment += step
+    third_source = Script(DOC)
+    third, third_sink = await make_service(db, third_source)
+    await run(third, third_source, at(10, 30), at(10, 30))
+    assert types(third_sink) == [EventType.SCHEDULE_SOURCE_UP]
 
 
 async def test_frozen_source_is_not_presented_as_current(db):
     # Updated at 09:00 local, then only 304s: fetched_at stays fresh while the data ages.
-    frozen = make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF}, last_updated=datetime(2026, 10, 15, 6, tzinfo=UTC))
-    service, sink, _ = await make_service(db, frozen, None)
-    await tick_through(service, at(8, 0), at(16, 0))
+    frozen = make_document({TODAY: TODAY_OFF, TOMORROW: TOMORROW_OFF}, last_updated=at(9))
+    source = Script(frozen, None)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(8), at(16), step=timedelta(minutes=15))
     assert service.current(at(16, 0)) is not None
-    await tick_through(service, at(16, 15), at(12, 0, day=17))
+    await run(service, source, at(16, 15), at(12, 0, day=17), step=timedelta(minutes=15))
     assert service.current(at(16, 15)) is None
     assert service.current(at(10, 0, day=17)) is None
-    assert types(sink) == [
-        EventType.SCHEDULE_TODAY,
-        EventType.SCHEDULE_SOURCE_DOWN,
-        EventType.SCHEDULE_TOMORROW,
-        EventType.SCHEDULE_TODAY,
-    ]
-    healthy_digest, _, *stale_digests = sink.events
-    assert healthy_digest.source_updated is None
-    assert [e.source_updated for e in stale_digests] == [at(9, 0), at(9, 0)]
+    assert types(sink) == [EventType.SCHEDULE_UPDATE, EventType.SCHEDULE_SOURCE_DOWN]
+    assert sink.events[1].at == at(9)
 
 
 async def test_schedule_without_today_is_not_current(db):
-    service, _, _ = await make_service(db, make_document({TOMORROW: TOMORROW_OFF}))
-    await service.tick(at(20, 0))
+    source = Script(make_document({TOMORROW: TOMORROW_OFF}))
+    service, _ = await make_service(db, source)
+    await run(service, source, at(20), at(20))
     assert service.current(at(20, 0)) is None
     assert service.current(at(0, 30, day=16)) is not None
-
-
-async def test_unhealthy_source_without_tomorrow_sends_the_evening_digest_once_it_recovers(db):
-    down = ScheduleSourceError("down")
-    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, *[down] * 7, DOC)
-    await tick_through(service, at(19, 45), at(21, 30))
-    assert types(sink) == [EventType.SCHEDULE_SOURCE_DOWN]
-    await tick_through(service, at(21, 45), at(22, 15))
-    assert types(sink)[1:] == [EventType.SCHEDULE_SOURCE_UP, EventType.SCHEDULE_TOMORROW]
-    assert sink.events[-1].source_updated is None
-
-
-async def test_change_notice_from_an_unhealthy_source_carries_its_age(db):
-    healthy = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 15, 5, 45, tzinfo=UTC))
-    failing_change = make_document(
-        {TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}},
-        ok=False,
-        last_updated=datetime(2026, 10, 15, 6, 10, tzinfo=UTC),
-    )
-    service, sink, _ = await make_service(db, healthy, failing_change)
-    await tick_through(service, at(9, 0), at(9, 45))
-    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
-    assert sink.events[0].source_updated is None
-    assert sink.events[1].source_updated == at(9, 10)
 
 
 async def test_an_older_copy_of_the_document_is_ignored(db):
     # CDN edges can serve the previous document after the new one; each flip must not read as a change.
     older = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 16, 22, tzinfo=UTC))
-    newer = make_document({TODAY: {16: "no", 17: "no", 18: "no", 19: "no"}}, last_updated=datetime(2026, 10, 16, 23, tzinfo=UTC))
-    service, sink, _ = await make_service(db, older, *[newer, older] * 5)
-    await tick_through(service, at(9, 0), at(11, 30))
-    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_CHANGED]
+    newer = make_document({TODAY: TODAY_LATER}, last_updated=datetime(2026, 10, 16, 23, tzinfo=UTC))
+    source = Script(older, *[newer, older] * 5)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(11, 30), step=timedelta(minutes=15))
+    [event] = updates(sink)
+    assert event.update.days[0].outages == (Outage(at(15), at(19)),)
     assert service.current(at(11, 30)).day(TODAY).outages == (Outage(at(15), at(19)),)
 
 
 async def test_source_down_names_the_time_the_data_stopped(db):
-    frozen = make_document({TODAY: TODAY_OFF}, last_updated=datetime(2026, 10, 15, 6, tzinfo=UTC))
-    service, sink, _ = await make_service(db, frozen, None)
-    await tick_through(service, at(9, 0), at(11, 0), step=timedelta(minutes=1))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-    await service.tick(at(11, 1))
-    assert types(sink) == [EventType.SCHEDULE_TODAY, EventType.SCHEDULE_SOURCE_DOWN]
-    assert sink.events[1].at == at(9, 0)
+    source = Script(make_document({TODAY: TODAY_OFF}, last_updated=at(9)), None)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(11), step=timedelta(minutes=1))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]
+    await run(service, source, at(11, 1), at(11, 1))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE, EventType.SCHEDULE_SOURCE_DOWN]
+    assert sink.events[1].at == at(9)
 
 
 async def test_not_modified_ticks_rarely_write_to_the_card(db, monkeypatch):
@@ -459,93 +497,45 @@ async def test_not_modified_ticks_rarely_write_to_the_card(db, monkeypatch):
         await save_state(key, value)
 
     monkeypatch.setattr(db, "save_state", counting_save_state)
-    service, _, _ = await make_service(db, DOC, None)
-    await tick_through(service, at(9, 0), at(11, 30))
+    source = Script(DOC, None)
+    service, _ = await make_service(db, source)
+    await run(service, source, at(9), at(11, 30), step=timedelta(minutes=1))
     assert writes.count(SCHEDULE_KEY) <= 3
-    assert writes.count(DIGESTS_KEY) == 1
+    assert writes.count(POSTED_KEY) == 1
 
 
 async def test_restart_keeps_the_fetch_time_within_an_hour(db):
-    first, _, _ = await make_service(db, DOC, None)
-    await tick_through(first, at(9, 0), at(9, 45))
-    second, _, _ = await make_service(db, ScheduleSourceError("down"))
+    first_source = Script(DOC, None)
+    first, _ = await make_service(db, first_source)
+    await run(first, first_source, at(9), at(9, 45), step=timedelta(minutes=15))
+    second, _ = await make_service(db, Script(ScheduleSourceError("down")))
     assert second.current(at(15, 0)) is not None
     assert second.current(at(15, 1)) is None
 
 
 async def test_a_broken_schedule_row_starts_without_a_schedule(db, caplog):
     await db.save_state(SCHEDULE_KEY, {"group": GROUP, "days": "garbage"})
-    service, sink, _ = await make_service(db, DOC)
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
     assert service.current(at(8, 0)) is None
     assert "stored schedule" in caplog.text
-    await service.tick(at(9, 0))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
+    await run(service, source, at(9), at(9, 30))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]
 
 
 @pytest.mark.parametrize(
     ("key", "row"),
     [
-        (DIGESTS_KEY, {"today": "not a date"}),
-        (DIGESTS_KEY, {"today": None, "announced": ["2026-10-15"]}),
+        (POSTED_KEY, {"today": "not a date"}),
+        (POSTED_KEY, {"posted": ["2026-10-15"]}),
+        (POSTED_KEY, {"announced": ["2026-10-15"]}),
         (HEALTH_KEY, {"failing_since": 7}),
         (HEALTH_KEY, [1, 2]),
     ],
 )
 async def test_a_broken_state_row_starts_that_part_empty(db, key, row):
     await db.save_state(key, row)
-    service, sink, _ = await make_service(db, DOC)
-    await service.tick(at(9, 0))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-
-
-async def test_an_old_digest_row_counts_its_evening_announcement(db):
-    # Rows written by the fixed 21:00 digest have "tomorrow" instead of per-day fingerprints.
-    await db.save_state(DIGESTS_KEY, {"today": "2026-10-15", "tomorrow": "2026-10-16", "pending": None})
-    service, sink, _ = await make_service(db, DOC)
-    await tick_through(service, at(21, 0), at(23, 0), step=timedelta(minutes=5))
-    assert sink.events == []
-    stored = await db.load_state(DIGESTS_KEY)
-    assert set(stored) == {"today", "pending", "announced"}
-    assert "2026-10-16" in stored["announced"]
-
-
-async def test_a_schedule_that_settles_after_midnight_without_a_pending_notice_goes_out_at_night(db):
-    # The source was down at 22:00 (no "не опубліковано"), came back at 23:50 with a night outage.
-    night_first = make_document({TODAY: TODAY_OFF, TOMORROW: {1: "no", 2: "no"}})
-    down = ScheduleSourceError("down")
-    service, sink, _ = await make_service(db, DOC_TODAY_ONLY, *[down] * 46, night_first)
-    await tick_through(service, at(20, 0), at(23, 45), step=timedelta(minutes=5))
-    assert EventType.SCHEDULE_TOMORROW_PENDING not in types(sink)
-    await tick_through(service, at(23, 50), at(0, 30, day=16), step=timedelta(minutes=5))
-    announced = [e for e in sink.events if e.type == EventType.SCHEDULE_TODAY]
-    assert len(announced) == 1
-    assert announced[0].schedule.day == TOMORROW
-    assert announced[0].silent is True
-    await tick_through(service, at(9, 0, day=16), at(9, 15, day=16))
-    assert len([e for e in sink.events if e.type == EventType.SCHEDULE_TODAY]) == 1
-
-
-async def test_the_morning_digest_absorbs_a_change_that_settles_at_the_same_time(db):
-    service, sink, _ = await make_service(db, *[DOC] * 13, *[DOC_TODAY_CHANGED] * 40)
-    await tick_through(service, at(18, 0, day=14), at(19, 0, day=14), step=timedelta(minutes=5))
-    await tick_through(service, at(8, 40), at(9, 0), step=timedelta(minutes=5))
-    today_events = [e.type for e in sink.events if e.at >= at(8, 40)]
-    assert today_events == [EventType.SCHEDULE_TODAY]
-    assert sink.events[-1].schedule.outages == (Outage(at(15), at(19)),)
-
-
-async def test_an_old_digest_row_written_late_in_the_evening_keeps_today_announced(db):
-    await db.save_state(DIGESTS_KEY, {"today": "2026-10-15", "tomorrow": "2026-10-16", "pending": None})
-    service, sink, _ = await make_service(db, DOC, DOC_TODAY_CHANGED)
-    await tick_through(service, at(21, 30), at(22, 30), step=timedelta(minutes=5))
-    assert types(sink) == [EventType.SCHEDULE_CHANGED]
-    assert sink.events[0].schedule.day == TODAY
-
-
-async def test_a_night_start_leaves_a_day_without_morning_outages_to_the_digest(db):
-    # A bot (re)started at 02:00 with no announcement for today: only an outage before 09:00 is urgent.
-    service, sink, _ = await make_service(db, DOC)
-    await tick_through(service, at(2, 0), at(9, 15))
-    assert types(sink) == [EventType.SCHEDULE_TODAY]
-    assert sink.events[0].at == at(9, 0)
-    assert sink.events[0].silent is False
+    source = Script(DOC)
+    service, sink = await make_service(db, source)
+    await run(service, source, at(9), at(9, 30))
+    assert types(sink) == [EventType.SCHEDULE_UPDATE]

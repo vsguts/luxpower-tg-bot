@@ -5,7 +5,7 @@ from lxbot.device.snapshot import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
 from lxbot.monitor.forecast import FORECAST_STEP, LONG_RUNTIME, BatteryConfig, Forecast, forecast_for
 from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
-from lxbot.schedule.model import DaySchedule, Outage, Schedule
+from lxbot.schedule.model import DaySchedule, Outage, Schedule, ScheduleUpdate
 from lxbot.storage.db import Subscriber, SubscriberStatus
 
 SNAPSHOT_STALE_AFTER = timedelta(minutes=2)
@@ -27,7 +27,6 @@ APPROVED_MARK = "✅ Схвалено"
 REJECTED_MARK = "❌ Відхилено"
 ALREADY_DECIDED = "Запит уже оброблено"
 NOT_FOUND = "Не знайдено"
-SCHEDULE_TOMORROW_PENDING = "⏳ Графік на завтра ще не опубліковано"
 SCHEDULE_SOURCE_UP = "✅ Графік відключень знову оновлюється"
 
 _WEEKDAYS = ("понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя")
@@ -88,9 +87,12 @@ def format_deviation(deviation: timedelta) -> str:
     return f"на {format_duration(abs(deviation))} {direction}"
 
 
+def _date_word(day: date, today: date) -> str:
+    return {0: "сьогодні", 1: "завтра"}.get((day - today).days, f"{day:%d.%m}")
+
+
 def _day_word(moment: datetime, now: datetime, tz: tzinfo) -> str:
-    days = (moment.astimezone(tz).date() - now.astimezone(tz).date()).days
-    return {0: "сьогодні", 1: "завтра"}.get(days, f"{moment.astimezone(tz):%d.%m}")
+    return _date_word(moment.astimezone(tz).date(), now.astimezone(tz).date())
 
 
 def _upcoming_line(outage: Outage, now: datetime, tz: tzinfo) -> str:
@@ -124,33 +126,57 @@ def _date_title(day: date) -> str:
     return f"{_WEEKDAYS[day.weekday()]}, {day.day} {_MONTHS[day.month - 1]}"
 
 
-def day_schedule_text(
-    title: str, schedule: DaySchedule, tz: tzinfo, icon: str = "📅", now: datetime | None = None
+def schedule_update_text(
+    update: ScheduleUpdate, now: datetime, tz: tzinfo, outdated_since: datetime | None = None
 ) -> str:
-    lines = [f"{icon} <b>{title}</b> · {_date_title(schedule.day)} · черга {schedule.label}"]
+    today = now.astimezone(tz).date()
+    icon = "🔄" if update.changed else "📅"
+    lines = [f"{icon} <b>{_update_headline(update, today)}</b> · черга {update.days[0].label}"]
+    for schedule in update.days:
+        lines += ["", _day_heading(schedule.day, today), *_outage_lines(schedule, tz, now)]
+    if outdated_since is not None:
+        lines += ["", f"⚠️ Дані могли застаріти: джерело оновлювалось {outdated_since.astimezone(tz):%d.%m %H:%M}"]
+    return "\n".join(lines)
+
+
+def _update_headline(update: ScheduleUpdate, today: date) -> str:
+    def words(days: tuple[date, ...]) -> str:
+        return " й ".join(_date_word(day, today) for day in days)
+
+    if update.changed and update.published:
+        return f"Змінився графік на {words(update.changed)}, опубліковано на {words(update.published)}"
+    if update.changed:
+        return f"Змінився графік на {words(update.changed)}"
+    return f"Опубліковано графік на {words(update.published)}"
+
+
+def _day_heading(day: date, today: date) -> str:
+    word = _date_word(day, today)
+    if word in ("сьогодні", "завтра"):
+        return f"<b>{word.capitalize()}</b>, {_date_title(day)}"
+    return f"<b>{_date_title(day).capitalize()}</b>"
+
+
+def _outage_lines(schedule: DaySchedule, tz: tzinfo, now: datetime) -> list[str]:
     if not schedule.outages:
-        lines.append("✅ Відключень не заплановано")
-        return "\n".join(lines)
+        return ["✅ Відключень не заплановано"]
     # Ticks carry the seconds of the process start; minute precision keeps "4 год" from reading "3 год 59 хв".
-    if now is not None:
-        now = now.replace(second=0, microsecond=0)
+    now = now.replace(second=0, microsecond=0)
+    lines = []
     for outage in schedule.outages:
         if outage.certain:
             text, emoji = f"{format_range(outage, tz)} ({_approx_hours(outage.duration)})", "🕐"
         else:
             text, emoji = f"можливо {format_range(outage, tz)}", "❔"
-        # A morning digest can list outages that are already over: keep them for the picture, struck through.
-        passed = now is not None and outage.end <= now
-        lines.append(f"{emoji} <s>{text}</s>" if passed else f"{emoji} {text}")
+        # Today's section keeps the outages that are already over for the picture, struck through.
+        lines.append(f"{emoji} <s>{text}</s>" if outage.end <= now else f"{emoji} {text}")
     total = schedule.certain_total
     if total:
         lines.append(f"Без світла: {format_duration(total)}{_still_ahead(schedule, now, total)}")
-    return "\n".join(lines)
+    return lines
 
 
-def _still_ahead(schedule: DaySchedule, now: datetime | None, total: timedelta) -> str:
-    if now is None:
-        return ""
+def _still_ahead(schedule: DaySchedule, now: datetime, total: timedelta) -> str:
     ahead = sum((o.end - max(o.start, now) for o in schedule.outages if o.certain and o.end > now), timedelta())
     if ahead == total:
         return ""
@@ -205,30 +231,14 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
             return f"⚠️ Немає зв'язку з пристроєм з {clock}"
         case EventType.DEVICE_UP:
             return f"✅ Зв'язок з пристроєм відновлено о {clock}"
-        case EventType.SCHEDULE_TODAY:
-            return _digest_text("Графік на сьогодні", event, tz)
-        case EventType.SCHEDULE_TOMORROW:
-            return _digest_text("Графік на завтра", event, tz)
-        case EventType.SCHEDULE_TOMORROW_PUBLISHED:
-            return _digest_text("Графік на завтра опубліковано", event, tz)
-        case EventType.SCHEDULE_TOMORROW_PENDING:
-            return SCHEDULE_TOMORROW_PENDING
-        case EventType.SCHEDULE_CHANGED:
-            word = _day_word(datetime.combine(event.schedule.day, time(12), tz), event.at, tz)
-            return _digest_text(f"Графік на {word} змінився", event, tz, icon="🔄")
+        case EventType.SCHEDULE_UPDATE:
+            return schedule_update_text(event.update, event.at, tz, event.source_updated)
         case EventType.SCHEDULE_SOURCE_DOWN:
             return f"⚠️ Графік відключень не оновлюється з {clock}"
         case EventType.SCHEDULE_SOURCE_UP:
             return SCHEDULE_SOURCE_UP
         case _:
             return None
-
-
-def _digest_text(title: str, event: Event, tz: tzinfo, icon: str = "📅") -> str:
-    text = day_schedule_text(title, event.schedule, tz, icon, now=event.at)
-    if event.source_updated is None:
-        return text
-    return f"{text}\n⚠️ Дані могли застаріти: джерело оновлювалось {event.source_updated.astimezone(tz):%d.%m %H:%M}"
 
 
 def _runtime(duration: timedelta) -> str:
