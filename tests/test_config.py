@@ -1,4 +1,4 @@
-from datetime import time, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -77,9 +77,9 @@ def test_schedule_defaults():
     schedule = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2"}).schedule
     assert schedule.group == "GPV3.2"
     assert schedule.url == DEFAULT_URL
-    assert schedule.poll_interval == timedelta(minutes=15)
+    assert schedule.poll_interval == timedelta(minutes=5)
     assert schedule.match_window == timedelta(minutes=30)
-    assert (schedule.today_at, schedule.pending_at, schedule.settle) == (time(9), time(22), timedelta(minutes=20))
+    assert schedule.settle == timedelta(minutes=20)
 
 
 def test_schedule_overrides():
@@ -88,8 +88,6 @@ def test_schedule_overrides():
         "SCHEDULE_URL": "https://example.test/x.json",
         "SCHEDULE_POLL_INTERVAL": "600",
         "SCHEDULE_MATCH_WINDOW": "20",
-        "DIGEST_TODAY_AT": "08:30",
-        "SCHEDULE_PENDING_AT": "23:30",
         "SCHEDULE_SETTLE_MINUTES": "15",
     }
     schedule = settings_from_env(env).schedule
@@ -97,21 +95,17 @@ def test_schedule_overrides():
     assert schedule.url == "https://example.test/x.json"
     assert schedule.poll_interval == timedelta(minutes=10)
     assert schedule.match_window == timedelta(minutes=20)
-    assert (schedule.today_at, schedule.pending_at, schedule.settle) == (time(8, 30), time(23, 30), timedelta(minutes=15))
+    assert schedule.settle == timedelta(minutes=15)
 
 
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [
-        ("DIGEST_TODAY_AT", "9am", "DIGEST_TODAY_AT"),
-        ("SCHEDULE_PENDING_AT", "25:00", "SCHEDULE_PENDING_AT"),
         ("SCHEDULE_SETTLE_MINUTES", "soon", "SCHEDULE_SETTLE_MINUTES"),
         ("SCHEDULE_SETTLE_MINUTES", "0", "SCHEDULE_SETTLE_MINUTES"),
-        ("SCHEDULE_PENDING_AT", "17:00", "SCHEDULE_PENDING_AT must be 18:00 or later"),
         ("SCHEDULE_SETTLE_MINUTES", "60", "SCHEDULE_SETTLE_MINUTES must be at most 45"),
         ("SCHEDULE_MATCH_WINDOW", "half", "SCHEDULE_MATCH_WINDOW"),
         ("SCHEDULE_POLL_INTERVAL", "often", "SCHEDULE_POLL_INTERVAL"),
-        ("DIGEST_TODAY_AT", "19:00", "DIGEST_TODAY_AT must be earlier than 18:00"),
     ],
 )
 def test_bad_schedule_values(name, value, message):
@@ -141,13 +135,6 @@ def test_schedule_group_accepts_the_gpv_prefix():
 def test_schedule_group_must_look_like_a_queue(value):
     with pytest.raises(ConfigError, match="SCHEDULE_GROUP must look like 3.2"):
         settings_from_env(ENV | {"SCHEDULE_GROUP": value})
-
-
-@pytest.mark.parametrize("name", ["DIGEST_TODAY_AT", "SCHEDULE_PENDING_AT"])
-@pytest.mark.parametrize("value", ["09:00+02:00", "20:00Z"])
-def test_digest_times_take_no_time_zone(name, value):
-    with pytest.raises(ConfigError, match=name):
-        settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: value})
 
 
 def test_battery_forecast_is_off_without_a_capacity():
@@ -198,7 +185,8 @@ def test_ecoflow_blank_credentials_are_missing():
         ecoflow_config_from_env({"ECOFLOW_ACCESS_KEY": "a", "ECOFLOW_SECRET_KEY": " ", "ECOFLOW_SERIAL": "x"})
 
 
-def test_the_retired_tomorrow_digest_setting_only_warns(caplog):
-    settings = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", "DIGEST_TOMORROW_AT": "21:00"})
-    assert settings.schedule.pending_at == time(22)
-    assert "DIGEST_TOMORROW_AT" in caplog.text
+@pytest.mark.parametrize("name", ["DIGEST_TODAY_AT", "DIGEST_TOMORROW_AT", "SCHEDULE_PENDING_AT"])
+def test_retired_digest_times_only_warn(caplog, name):
+    settings = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: "21:00"})
+    assert settings.schedule.settle == timedelta(minutes=20)
+    assert name in caplog.text

@@ -34,11 +34,18 @@ def group_key(queue: str) -> str:
 
 
 def parse_schedule(document: Mapping, group: str, tz: ZoneInfo) -> Schedule:
+    status = document.get("lastUpdateStatus") if isinstance(document, Mapping) else None
+    if not isinstance(status, Mapping):
+        status = {}
     try:
         fact = document["fact"]
         data = fact["data"]
+        # No days at all (serialized as {} or []) means no outages are planned, unless the scrape failed.
+        empty = isinstance(data, Mapping | list) and not data
+        if empty and not status.get("ok"):
+            raise ScheduleParseError("empty schedule document from a failed update")
         days = {}
-        for day_key, groups in data.items():
+        for day_key, groups in ({} if empty else data).items():
             slots = groups.get(group) if isinstance(groups, Mapping) else None
             if slots is None:
                 continue
@@ -46,11 +53,8 @@ def parse_schedule(document: Mapping, group: str, tz: ZoneInfo) -> Schedule:
             days[day] = DaySchedule(group, day, merge_outages(_slot_outages(day, slots, tz)))
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError, OSError) as exc:
         raise ScheduleParseError(f"malformed schedule document: {exc!r}") from exc
-    if not days:
+    if not empty and not days:
         raise ScheduleParseError(f"group {group} is not in the schedule document")
-    status = document.get("lastUpdateStatus")
-    if not isinstance(status, Mapping):
-        status = {}
     return Schedule(
         group=group,
         days=days,

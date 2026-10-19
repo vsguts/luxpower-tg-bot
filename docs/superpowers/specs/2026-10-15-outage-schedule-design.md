@@ -1,23 +1,23 @@
 # Planned outage schedule — design
 
-Date: 2026-10-15, revised 2026-10-18 (settled announcements). Status: implemented.
+Date: 2026-10-15, revised 2026-10-18 (settled announcements) and 2026-10-19 (no fixed times). Status:
+implemented.
 Builds on `2026-10-15-luxpower-tg-bot-design.md` (the running bot).
 
 ## Goal
 
-Bring the DTEK planned outage schedule (графік стабілізаційних відключень) into the bot: daily digests,
-plan-vs-actual on every grid change, and the next planned change in `/status`.
+Bring the DTEK planned outage schedule (графік стабілізаційних відключень) into the bot: the schedule
+whenever it appears or changes, plan-vs-actual on every grid change, and the next planned change in `/status`.
 
 ### Features
 
-1. 09:00: today's schedule to all subscribers.
-2. Tomorrow's schedule as soon as DTEK publishes it and it has settled (revised 2026-10-18, see
-   "Schedule service"). Nothing by 22:00: "not published yet", and a separate message once it appears.
+1. A day's schedule goes out as soon as DTEK publishes it and it has settled, in one message with every
+   known day from today on (revised 2026-10-19: no fixed 09:00 / 22:00 messages, see "Schedule service").
+2. A day's schedule that changes after it went out: the same message, saying what changed.
 3. Grid lost: say whether it matches the schedule (late / early / on time / off schedule) and when the
    power is expected back.
 4. Grid restored: say whether it matches the schedule and when the next planned outage is.
 5. `/status`: the next planned change (inside a planned outage: until when; otherwise: the next outage).
-6. A day's schedule changed after it was announced: a short notice with the new schedule.
 
 ### Out of scope
 
@@ -66,7 +66,7 @@ lxbot/schedule/
   parse.py     JSON document -> Schedule for one group (pure)
   source.py    ScheduleSource protocol + HttpScheduleSource (aiohttp, ETag)
   compare.py   pure: match a grid event to the schedule; next planned change
-  service.py   ScheduleService: poll, persist, detect changes, digests (clock-driven)
+  service.py   ScheduleService: poll, persist, post new and changed days
   annotate.py  ScheduleAnnotator: EventSink wrapper adding schedule matches to grid events
 ```
 
@@ -80,7 +80,7 @@ lxbot/schedule/
 
 - `Outage(start: datetime, end: datetime, certain: bool)`, timezone-aware. `certain=False` comes from the
   `maybe*` states.
-- `DaySchedule(group: str, day: date, outages: tuple[Outage, ...])`; the group gives the digest its
+- `DaySchedule(group: str, day: date, outages: tuple[Outage, ...])`; the group gives the message its
   "черга 3.2" label. Within a day, adjacent intervals of the same
   certainty are merged.
 - `Schedule(group, days: dict[date, DaySchedule], dtek_updated: datetime | None, source_ok: bool,
@@ -119,20 +119,25 @@ Grid messages gain lines from the attached match, under the existing text:
 - No later outage known: "📅 Відключень за графіком більше не заплановано".
 - Possible intervals: "⏱ За можливим відключенням з 18:00 — …".
 
-Digest (09:00 today; tomorrow once it settles):
+Schedule update (whenever a day appears or a posted day changes):
 
 ```
-📅 Графік на сьогодні · четвер, 16 жовтня · черга 3.2
-🕐 з 11:00 до 15:00 (~4 год)
-🕐 з 20:30 до 24:00 (~3.5 год)
-❔ можливо з 18:00 до 19:00
-Без світла: 7 год 30 хв
+📅 Опубліковано графік на завтра · черга 3.2
+
+Сьогодні, понеділок, 19 жовтня
+🕐 з 08:00 до 12:00 (~4 год)      <- struck through once over
+🕐 з 18:00 до 22:00 (~4 год)
+Без світла: 8 год · ще попереду 4 год
+
+Завтра, вівторок, 20 жовтня
+✅ Відключень не заплановано
 ```
 
-- No outages: "✅ Відключень не заплановано".
-- Tomorrow missing at 22:00: "⏳ Графік на завтра ще не опубліковано". When it appears later:
-  "📅 Графік на завтра опубліковано" plus the digest body.
-- Changed: "🔄 Графік на сьогодні змінився" (or "на завтра") plus the digest body.
+- Headline: "Опубліковано графік на завтра" (or "на сьогодні", "на сьогодні й завтра"), "🔄 Змінився
+  графік на сьогодні", or both: "🔄 Змінився графік на сьогодні, опубліковано на завтра".
+- A section per known day from today on; possible outages read "❔ можливо з 18:00 до 19:00".
+- From data older than 1 h (the source stopped updating): "⚠️ Дані могли застаріти: джерело
+  оновлювалось 19.10 08:31" at the end.
 - `/status` line:
   - inside a planned outage: "📅 За графіком світла немає до 15:00";
   - otherwise: "📅 Наступне відключення: сьогодні з 20:30 до 24:00" (or "завтра з …");
@@ -142,47 +147,49 @@ Digest (09:00 today; tomorrow once it settles):
 
 ## Schedule service
 
-- **Polling:** every `SCHEDULE_POLL_INTERVAL` (15 min) with `If-None-Match`; a 304 keeps the current
-  schedule. Timeout 20 s.
+- **Polling:** every `SCHEDULE_POLL_INTERVAL` (5 min, the pace of the scraper) with `If-None-Match`; a 304
+  keeps the current schedule. Timeout 20 s.
 - **Persistence:**
   - the last good schedule (its days with normalized outages, the fetch time and the source metadata) is
     stored in the `state` table under `schedule`;
-  - the digest flags are stored under `schedule-digests`: the day of the last morning digest, the pending
-    "not published" day, and per announced day the fingerprint of what was announced.
+  - per day from today on, the fingerprint of what was posted is stored under `schedule-digests` (the
+    row name predates this revision; rows written by the fixed-time digests are migrated on load, so the
+    deploy reposts nothing).
   - On start the service loads them, so a restart without internet still knows the schedule and does not
-    resend digests.
-- **Why not a fixed evening time** (revised 2026-10-18 from the source history, 8-17 October): DTEK
-  published tomorrow's schedule for queue 3.2 between 19:33 and 20:47 on most evenings, once only at
-  00:38, and once as an empty day at 21:03 that was filled at 21:18.
-- **Settling:** the service remembers, per day, when the current version of its outages first appeared.
-  A version is announced once it has held for `SCHEDULE_SETTLE_MINUTES` (20), or 45 min after the churn
-  began if DTEK keeps editing.
-- **Today's digest** is due from `DIGEST_TODAY_AT` (09:00) until 18:00 if not sent yet. It is sent from
-  the freshest schedule (refetch if the last fetch is older than 15 min; failure: use what is stored).
-  Outages already over are struck through, and the total says what is still ahead.
-- **Tomorrow:** from 18:00 the service polls every 5 min (until 01:00) and announces tomorrow once its
-  version has settled. With nothing by `SCHEDULE_PENDING_AT` (22:00) and a healthy source, it sends "не
-  опубліковано" once; the schedule then goes out as "опубліковано" whenever it settles. One that only
-  settles after midnight goes out as today's before 09:00 (and replaces the 09:00 digest), also when no
-  "не опубліковано" went out (the source was down at 22:00).
-- **Changes:** what the family was told is kept per day as a fingerprint of its outages (an evening
-  announcement carries over past midnight). When the schedule differs from it and the new version has
-  settled, a "змінився" notice goes out.
+    repost.
+- **Why no fixed times** (revised 2026-10-19 from the source history, 8-17 October): DTEK published
+  tomorrow's schedule for queue 3.2 between 19:33 and 20:47 on most evenings, once only at 00:38, and once
+  as an empty day at 21:03 that was filled at 21:18. A 09:00 digest repeated what had gone out the evening
+  before, and "not published yet" at 22:00 was noise.
+- **Settling:** the service remembers, per day, since when the current version of its outages holds. A new
+  day goes out once its version has held for `SCHEDULE_SETTLE_MINUTES` (20), or 45 min after it appeared
+  if DTEK keeps editing; a change of a posted day likewise, from when it first differed.
+- **One message:** when a day is due, the message lists every posted day and every settled new day from
+  today on. A new day that has not settled waits for its own message; a posted day that differs and has
+  not settled holds the whole message back (at most 45 min), so a message never shows a short-lived edit.
+  A day that drops out of the document settles afresh if it comes back. Midnight changes nothing:
+  fingerprints are kept per date, so tomorrow's schedule does not go out again as today's.
+- **Empty document:** most of the summer DTEK publishes no days at all. With `lastUpdateStatus.ok` true
+  that means no outages are planned: every day reads as one without outages, grid changes as "not on
+  schedule", nothing is posted, and the source stays healthy. When a document with days turns empty, the
+  posted days go out as changed to "no outages", but only after 45 min, so a blank page at the source
+  cancels nothing. A posted day dropped from a document that still has other days is left as posted. An
+  empty document from a failed scrape, and `data` that is neither an object nor a list, are parse errors.
 - **Quiet hours:** schedule messages and source-health alerts between 23:00 and 07:00 are sent with
   `disable_notification`; grid and battery alerts never are.
 - **Source health:** "down" when the fetch fails, `lastUpdateStatus.ok` is false, or `lastUpdated` is older
   than 1 h, continuously for 1 h.
   - The admin gets one "не оновлюється" message, and one "знову оновлюється" on recovery.
   - The last good schedule stays in use.
-- **Journal:** digests, change notices and source health go through `Notifier.publish` as events
-  (`schedule_today`, `schedule_tomorrow`, `schedule_tomorrow_pending`, `schedule_tomorrow_published`,
-  `schedule_changed`, `schedule_source_down`, `schedule_source_up`). The day's outages go into the event payload for later
-  statistics.
+- **Journal:** schedule updates and source health go through `Notifier.publish` as events
+  (`schedule_update`, `schedule_source_down`, `schedule_source_up`). The days shown and which of them were
+  published or changed go into the event payload for later statistics.
 
 ## Event model change
 
 - `Event` gains two optional fields:
-  - `schedule: DaySchedule | None`, for digests and change notices;
+  - `update: ScheduleUpdate | None` (the days shown, and which were published or changed), for schedule
+    updates;
   - `match: ScheduleMatch | None`, for grid events.
 - `ScheduleMatch(kind: "lost"|"restored", interval: Outage | None, deviation: timedelta | None,
   next_outage: Outage | None)`.
@@ -195,18 +202,17 @@ Digest (09:00 today; tomorrow once it settles):
 |----------|---------|---------|
 | `SCHEDULE_GROUP` | empty | queue, e.g. `3.2` (read as `GPV3.2`); empty turns the feature off |
 | `SCHEDULE_URL` | the kyiv-region raw URL above | source document |
-| `SCHEDULE_POLL_INTERVAL` | `900` | seconds between fetches |
+| `SCHEDULE_POLL_INTERVAL` | `300` | seconds between fetches |
 | `SCHEDULE_MATCH_WINDOW` | `30` | minutes of tolerance for "on schedule" |
-| `DIGEST_TODAY_AT` | `09:00` | local time of today's digest |
-| `SCHEDULE_PENDING_AT` | `22:00` | "not published yet" if tomorrow is still missing (18:00 or later) |
-| `SCHEDULE_SETTLE_MINUTES` | `20` | how long a version must hold before it is announced |
+| `SCHEDULE_SETTLE_MINUTES` | `20` | how long a version must hold before it is posted (at most 45) |
 
-Malformed values raise `ConfigError` naming the variable (as for the existing settings).
+Malformed values raise `ConfigError` naming the variable (as for the existing settings). The retired
+`DIGEST_TODAY_AT`, `DIGEST_TOMORROW_AT` and `SCHEDULE_PENDING_AT` only log a warning.
 
 ## Errors
 
 - **Fetch or parse failure:** keep the last good schedule, log it, and count it toward source health.
-- **Group missing from the document:** a parse error, which counts as a failure.
+- **Group missing from a document that has days:** a parse error, which counts as a failure.
 - **Unknown slot state:** treated as `maybe` and logged once per value, so a new state never hides an
   outage.
 - **DST days:** slots are local hours. Datetimes are built with `zoneinfo`, and the 25/23-hour days come
@@ -219,11 +225,12 @@ Malformed values raise `ConfigError` naming the variable (as for the existing se
 - **Comparison:** table-driven: late, early, on time, off schedule, at the edges of the window, a possible
   interval, an interval crossing midnight, the next outage today, tomorrow and none.
 - **Service with a fake clock and a fake source:**
-  - the 09:00 digest and the settled announcement of tomorrow;
-  - a late start;
-  - no resend after a restart;
-  - tomorrow pending and then published;
-  - change notices only after the digest;
+  - real evenings: tomorrow at 20:03 (9.10), after midnight (16.10), an empty day filled 15 min later
+    (17.10), a schedule that keeps changing;
+  - a change and a new day in one message, a change that does not wait for an unsettled new day;
+  - the empty summer document, outages resuming, a cancelled schedule;
+  - no repost after a restart or at midnight, and the migration of the fixed-time digest rows;
+  - the "data may be old" warning only for data older than 1 h;
   - the ETag 304 path;
   - source down and up.
 - **Annotator:** grid events get matches; other events pass through untouched.
