@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 T = TypeVar("T", int, float)
 _QUEUE = re.compile(r"\d+\.\d+", re.ASCII)
 _TUYA_ID = re.compile(r"[A-Za-z0-9]+", re.ASCII)
+_MINUTES = re.compile(r"[0-9]+", re.ASCII)
+_MAX_REPEAT_MINUTES = 24 * 60
 
 
 class ConfigError(Exception):
@@ -157,10 +159,10 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     if not lost and not restored:
         log.warning("Tuya keys are set but no TUYA_SCENE_*: no scene will run")
         return None
-    minutes = _number(env, "TUYA_SCENE_REPEAT_MINUTES", "10", int)
-    if minutes < 0:
-        raise ConfigError("TUYA_SCENE_REPEAT_MINUTES must be 0 (off) or more")
-    repeat = timedelta(minutes=minutes) if minutes else None
+    minutes = env.get("TUYA_SCENE_REPEAT_MINUTES", "").strip() or "10"
+    if not _MINUTES.fullmatch(minutes) or int(minutes) > _MAX_REPEAT_MINUTES:
+        raise ConfigError(f"TUYA_SCENE_REPEAT_MINUTES must be whole minutes from 0 (off) to {_MAX_REPEAT_MINUTES}")
+    repeat = timedelta(minutes=int(minutes)) if int(minutes) else None
     return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored, repeat=repeat)
 
 
