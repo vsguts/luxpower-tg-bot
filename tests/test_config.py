@@ -190,3 +190,47 @@ def test_retired_digest_times_only_warn(caplog, name):
     settings = settings_from_env(ENV | {"SCHEDULE_GROUP": "3.2", name: "21:00"})
     assert settings.schedule.settle == timedelta(minutes=20)
     assert name in caplog.text
+
+
+TUYA_KEYS = {"TUYA_ACCESS_ID": "id123", "TUYA_ACCESS_SECRET": "secret"}
+
+
+def test_tuya_is_off_without_keys():
+    assert settings_from_env(ENV).tuya is None
+
+
+def test_tuya_defaults():
+    tuya = settings_from_env(ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "abcDEF123"}).tuya
+    assert (tuya.access_id, tuya.access_secret) == ("id123", "secret")
+    assert tuya.api_url == "https://openapi.tuyaeu.com"
+    assert (tuya.grid_lost_scene, tuya.grid_restored_scene) == ("abcDEF123", None)
+
+
+def test_tuya_overrides():
+    env = ENV | TUYA_KEYS | {
+        "TUYA_API_URL": "https://openapi-weaz.tuyaeu.com/",
+        "TUYA_SCENE_GRID_LOST": "lost1",
+        "TUYA_SCENE_GRID_RESTORED": "back1",
+    }
+    tuya = settings_from_env(env).tuya
+    assert tuya.api_url == "https://openapi-weaz.tuyaeu.com"
+    assert (tuya.grid_lost_scene, tuya.grid_restored_scene) == ("lost1", "back1")
+
+
+def test_tuya_keys_without_a_scene_only_warn(caplog):
+    assert settings_from_env(ENV | TUYA_KEYS).tuya is None
+    assert "TUYA_SCENE" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"TUYA_ACCESS_ID": "id123", "TUYA_SCENE_GRID_LOST": "lost1"}, "must be set together"),
+        ({"TUYA_SCENE_GRID_LOST": "lost1"}, "needs TUYA_ACCESS_ID"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost/../x"}, "TUYA_SCENE_GRID_LOST must be a Tuya scene ID"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_RESTORED": "a b"}, "TUYA_SCENE_GRID_RESTORED must be a Tuya scene ID"),
+    ],
+)
+def test_bad_tuya_settings(extra, message):
+    with pytest.raises(ConfigError, match=message):
+        settings_from_env(ENV | extra)

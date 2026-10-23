@@ -12,12 +12,15 @@ from aiogram.types import BotCommand
 from lxbot.bot.handlers import router
 from lxbot.config import Settings, settings_from_env
 from lxbot.luxpower.client import DongleClient
-from lxbot.monitor.poller import Poller
+from lxbot.monitor.detector import EventType
+from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
 from lxbot.storage.db import Database
+from lxbot.tuya.api import TuyaApi
+from lxbot.tuya.scenes import SceneTrigger
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +98,14 @@ async def stop_background(
     await asyncio.gather(poller_task, notifier_task, *others, return_exceptions=True)
 
 
+def _scenes(settings: Settings) -> dict[EventType, str]:
+    by_event = {
+        EventType.GRID_LOST: settings.tuya.grid_lost_scene,
+        EventType.GRID_RESTORED: settings.tuya.grid_restored_scene,
+    }
+    return {event: scene for event, scene in by_event.items() if scene}
+
+
 async def run(settings: Settings) -> None:
     db = await Database.open(settings.db_path)
     client = DongleClient(settings.dongle)
@@ -102,7 +113,11 @@ async def run(settings: Settings) -> None:
     notifier = Notifier(bot, db, settings.admin_chat_id, settings.tz)
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
-    sink = ScheduleAnnotator(notifier, schedules, settings.schedule.match_window) if schedules else notifier
+    tuya = TuyaApi(settings.tuya) if settings.tuya else None
+    scenes = SceneTrigger(notifier, tuya, _scenes(settings)) if tuya else None
+    sink: EventSink = scenes or notifier
+    if schedules is not None:
+        sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
     dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules)
     dispatcher.include_router(router)
@@ -125,10 +140,14 @@ async def run(settings: Settings) -> None:
     finally:
         for task in background:
             task.remove_done_callback(on_done)
+        if scenes is not None:
+            await scenes.close()
         if background:
             await stop_background(background[0], background[1], notifier, others=background[2:])
         if source is not None:
             await source.close()
+        if tuya is not None:
+            await tuya.close()
         await client.close()
         await db.close()
         await bot.session.close()

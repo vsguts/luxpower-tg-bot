@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from lxbot.bot import texts
-from lxbot.monitor.detector import Debounced, Event, EventType, State
+from lxbot.monitor.detector import Audience, Debounced, Event, EventType, State
 from lxbot.storage.db import Subscriber, SubscriberStatus
 from tests.factories import at, make_snapshot
 
@@ -131,3 +131,17 @@ def test_status_text_does_not_check_a_sagging_grid_the_detector_holds():
     state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
     text = texts.status_text(make_snapshot(1, grid_v=175.0), state, at(1), KYIV)
     assert "⚡ Мережа: є · 175 В\n" in text
+
+
+def test_a_failed_tuya_scene_tells_the_admin_why():
+    event = Event(EventType.TUYA_SCENE_FAILED, at(0), cause=EventType.GRID_LOST, detail="code 1106: <deny>")
+    assert texts.event_text(event, KYIV) == "⚠️ Не вдалося запустити сценарій Tuya для «Світло зникло»: code 1106: &lt;deny&gt;"
+    assert event.audience == Audience.ADMIN
+
+
+def test_a_tuya_scene_run_is_only_journaled():
+    event = Event(EventType.TUYA_SCENE_RUN, at(0), cause=EventType.GRID_LOST, detail="lost1")
+    assert texts.event_text(event, KYIV) is None
+    assert event.audience == Audience.JOURNAL
+    assert event.to_payload()["cause"] == "grid_lost"
+    assert event.to_payload()["detail"] == "lost1"

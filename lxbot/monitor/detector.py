@@ -24,6 +24,8 @@ class EventType(StrEnum):
     SCHEDULE_UPDATE = "schedule_update"
     SCHEDULE_SOURCE_DOWN = "schedule_source_down"
     SCHEDULE_SOURCE_UP = "schedule_source_up"
+    TUYA_SCENE_RUN = "tuya_scene_run"
+    TUYA_SCENE_FAILED = "tuya_scene_failed"
 
 
 class Audience(StrEnum):
@@ -39,6 +41,8 @@ _AUDIENCES = {
     EventType.DEVICE_UP: Audience.ADMIN,
     EventType.SCHEDULE_SOURCE_DOWN: Audience.ADMIN,
     EventType.SCHEDULE_SOURCE_UP: Audience.ADMIN,
+    EventType.TUYA_SCENE_RUN: Audience.JOURNAL,
+    EventType.TUYA_SCENE_FAILED: Audience.ADMIN,
 }
 
 
@@ -53,6 +57,9 @@ class Event:
     match: ScheduleMatch | None = None
     source_updated: datetime | None = None
     forecast: Forecast | None = None
+    # For an event that follows another (a smart-home scene run on a grid change): that event and what happened.
+    cause: EventType | None = None
+    detail: str | None = None
     # Sent without a sound (night-time schedule messages); never set on grid or battery alerts.
     silent: bool = False
 
@@ -75,6 +82,10 @@ class Event:
             payload["source_updated"] = self.source_updated.isoformat()
         if self.forecast is not None:
             payload["forecast"] = self.forecast.to_payload()
+        if self.cause is not None:
+            payload["cause"] = str(self.cause)
+        if self.detail is not None:
+            payload["detail"] = self.detail
         return payload
 
 

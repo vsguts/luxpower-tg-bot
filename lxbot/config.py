@@ -16,6 +16,8 @@ from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
+from lxbot.tuya.api import DEFAULT_API_URL as TUYA_DEFAULT_API_URL
+from lxbot.tuya.api import TuyaConfig
 
 _REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 _ECOFLOW_REQUIRED = ("ECOFLOW_ACCESS_KEY", "ECOFLOW_SECRET_KEY", "ECOFLOW_SERIAL")
@@ -25,6 +27,7 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T", int, float)
 _QUEUE = re.compile(r"\d+\.\d+", re.ASCII)
+_TUYA_ID = re.compile(r"[A-Za-z0-9]+", re.ASCII)
 
 
 class ConfigError(Exception):
@@ -41,6 +44,7 @@ class Settings:
     tz: ZoneInfo
     db_path: Path
     schedule: ScheduleConfig | None = None
+    tuya: TuyaConfig | None = None
 
 
 def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
@@ -118,6 +122,35 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     return config
 
 
+def _tuya_scene(env: Mapping[str, str], name: str) -> str | None:
+    value = env.get(name, "").strip()
+    if value and not _TUYA_ID.fullmatch(value):
+        raise ConfigError(f"{name} must be a Tuya scene ID (letters and digits)")
+    return value or None
+
+
+def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
+    access_id, secret = env.get("TUYA_ACCESS_ID", "").strip(), env.get("TUYA_ACCESS_SECRET", "").strip()
+    lost, restored = _tuya_scene(env, "TUYA_SCENE_GRID_LOST"), _tuya_scene(env, "TUYA_SCENE_GRID_RESTORED")
+    if not access_id and not secret:
+        if lost or restored:
+            raise ConfigError("TUYA_SCENE_* needs TUYA_ACCESS_ID and TUYA_ACCESS_SECRET")
+        return None
+    if not access_id or not secret:
+        raise ConfigError("TUYA_ACCESS_ID and TUYA_ACCESS_SECRET must be set together")
+    # The keys alone are what tools.tuya_scenes needs to look the scenes up: not an error, just nothing to run.
+    if not lost and not restored:
+        log.warning("Tuya keys are set but no TUYA_SCENE_*: no scene will run")
+        return None
+    return TuyaConfig(
+        access_id=access_id,
+        access_secret=secret,
+        api_url=(env.get("TUYA_API_URL") or TUYA_DEFAULT_API_URL).rstrip("/"),
+        grid_lost_scene=lost,
+        grid_restored_scene=restored,
+    )
+
+
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:
     return DongleConfig(
         host=env["DONGLE_HOST"],
@@ -156,4 +189,5 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         tz=_timezone(env),
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),
+        tuya=tuya_config_from_env(env),
     )
