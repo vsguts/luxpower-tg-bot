@@ -43,7 +43,7 @@ def grid_lost():
     return Event(EventType.GRID_LOST, at(3), soc=80)
 
 
-async def test_the_grid_alert_goes_out_before_the_scene_runs():
+async def test_the_grid_alert_is_handed_on_before_the_scene_runs():
     runner = Runner()
     runner.release = asyncio.Event()
     trigger, sink = make_trigger(runner)
@@ -129,3 +129,45 @@ async def test_close_cancels_a_scene_stuck_past_the_grace(monkeypatch):
     await runner.started.wait()
     await asyncio.wait_for(trigger.close(), timeout=1)
     assert [e.type for e in sink.events] == [EventType.GRID_LOST]
+
+
+async def test_a_restored_grid_stops_a_lost_scene_still_retrying():
+    runner = Runner(TuyaError("blip"))
+    sink = Sink()
+    trigger = SceneTrigger(
+        sink, runner, SCENES | {EventType.GRID_RESTORED: "sceneBack01"}, retry_delays=(0.2,), clock=lambda: NOW
+    )
+    await trigger.publish([grid_lost()])
+    await runner.started.wait()
+    await asyncio.sleep(0.05)
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    await trigger.close()
+    await asyncio.sleep(0.3)
+    assert runner.calls == [LOST_SCENE, "sceneBack01"]
+
+
+async def test_a_restored_grid_without_a_scene_still_stops_the_lost_one():
+    runner = Runner(TuyaError("blip"))
+    sink = Sink()
+    trigger = SceneTrigger(sink, runner, SCENES, retry_delays=(0.2,), clock=lambda: NOW)
+    await trigger.publish([grid_lost()])
+    await runner.started.wait()
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    await asyncio.sleep(0.3)
+    assert runner.calls == [LOST_SCENE]
+    assert EventType.TUYA_SCENE_FAILED not in [e.type for e in sink.events]
+
+
+async def test_a_journal_that_fails_still_runs_the_scene():
+    class BrokenSink:
+        async def publish(self, events):
+            raise OSError("disk full")
+
+    runner = Runner()
+    trigger = SceneTrigger(BrokenSink(), runner, SCENES, retry_delays=(), clock=lambda: NOW)
+    try:
+        await trigger.publish([grid_lost()])
+    except OSError:
+        pass
+    await trigger.close()
+    assert runner.calls == [LOST_SCENE]

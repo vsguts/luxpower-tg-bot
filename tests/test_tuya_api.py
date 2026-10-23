@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from lxbot.tuya.api import TuyaApi, TuyaConfig, TuyaError, signature, string_to_sign
@@ -117,3 +119,47 @@ async def test_an_unreachable_cloud_is_reported(clock):
             await client.trigger_scene(SCENE)
     finally:
         await client.close()
+
+
+async def test_every_call_says_it_is_json(cloud, api):
+    await api.trigger_scene(SCENE)
+    assert cloud.content_types == ["application/json", "application/json"]
+
+
+async def test_concurrent_calls_share_one_token(cloud, api):
+    await asyncio.gather(api.trigger_scene(SCENE), api.trigger_scene(SCENE))
+    assert cloud.tokens_issued == 1
+
+
+async def test_a_bad_token_lifetime_is_a_tuya_error(cloud, api):
+    cloud.issue_bad_expiry()
+    with pytest.raises(TuyaError, match="expire_time"):
+        await api.trigger_scene(SCENE)
+
+
+async def test_a_closed_client_makes_no_calls(cloud, api):
+    await api.close()
+    with pytest.raises(TuyaError, match="closed"):
+        await api.trigger_scene(SCENE)
+    assert cloud.tokens_issued == 0
+
+
+async def test_transport_errors_do_not_carry_the_request_headers(clock):
+    async def bad_reply(reader, writer):
+        await reader.read(1024)
+        writer.write(b"HTTP/1.1 200 OK\r\nbroken header line\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(bad_reply, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = TuyaApi(TuyaConfig(ACCESS_ID, SECRET, api_url=f"http://127.0.0.1:{port}", timeout=2), clock=clock)
+    try:
+        with pytest.raises(TuyaError) as raised:
+            await client.trigger_scene(SCENE)
+        assert ACCESS_ID not in str(raised.value)
+        assert "client_id" not in str(raised.value)
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()

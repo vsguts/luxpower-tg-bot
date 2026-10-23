@@ -217,6 +217,11 @@ def test_tuya_overrides():
     assert (tuya.grid_lost_scene, tuya.grid_restored_scene) == ("lost1", "back1")
 
 
+def test_tuya_api_url_is_trimmed():
+    env = ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_API_URL": " https://openapi.tuyaeu.com/ "}
+    assert settings_from_env(env).tuya.api_url == "https://openapi.tuyaeu.com"
+
+
 def test_tuya_keys_without_a_scene_only_warn(caplog):
     assert settings_from_env(ENV | TUYA_KEYS).tuya is None
     assert "TUYA_SCENE" in caplog.text
@@ -227,8 +232,10 @@ def test_tuya_keys_without_a_scene_only_warn(caplog):
     [
         ({"TUYA_ACCESS_ID": "id123", "TUYA_SCENE_GRID_LOST": "lost1"}, "must be set together"),
         ({"TUYA_SCENE_GRID_LOST": "lost1"}, "needs TUYA_ACCESS_ID"),
-        (TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost/../x"}, "TUYA_SCENE_GRID_LOST must be a Tuya scene ID"),
-        (TUYA_KEYS | {"TUYA_SCENE_GRID_RESTORED": "a b"}, "TUYA_SCENE_GRID_RESTORED must be a Tuya scene ID"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost/../x"}, "TUYA_SCENE_GRID_LOST must be a Tuya ID"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_RESTORED": "a b"}, "TUYA_SCENE_GRID_RESTORED must be a Tuya ID"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_API_URL": "http://openapi.tuyaeu.com"}, "https://"),
+        (TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_API_URL": "openapi.tuyaeu.com"}, "https://"),
     ],
 )
 def test_bad_tuya_settings(extra, message):

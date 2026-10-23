@@ -18,6 +18,7 @@ class FakeTuya:
         self.status = 200
         self.result: object = True
         self.triggered: list[str] = []
+        self.content_types: list[str] = []
         self.url = ""
         self._valid_tokens: set[str] = set()
         self._server: test_utils.TestServer | None = None
@@ -41,12 +42,16 @@ class FakeTuya:
         await self._server.close()
 
     async def _token(self, request: web.Request) -> web.Response:
+        self.content_types.append(request.headers.get("Content-Type", ""))
         if not await self._signed(request, token=""):
             return _failure(1004, "sign invalid")
         self.tokens_issued += 1
         token = f"token-{self.tokens_issued}"
         self._valid_tokens.add(token)
         return _success({"access_token": token, "expire_time": self.expire_time, "uid": "owner"})
+
+    def issue_bad_expiry(self) -> None:
+        self.expire_time = "soon"
 
     async def _trigger(self, request: web.Request) -> web.Response:
         if self.status != 200:
@@ -58,6 +63,7 @@ class FakeTuya:
             return _failure(1004, "sign invalid")
         if self.code is not None:
             return _failure(self.code, "permission deny")
+        self.content_types.append(request.headers.get("Content-Type", ""))
         self.triggered.append(request.match_info["rule_id"])
         return _success(self.result)
 

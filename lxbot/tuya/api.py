@@ -1,5 +1,6 @@
 """Signed requests to the Tuya cloud OpenAPI (openapi.tuyaeu.com for the Central Europe data center)."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -65,6 +66,8 @@ class TuyaApi:
         self._session: aiohttp.ClientSession | None = None
         self._token: str | None = None
         self._token_expires = 0.0
+        self._token_lock = asyncio.Lock()
+        self._closed = False
 
     async def trigger_scene(self, rule_id: str) -> None:
         result = await self.request("POST", SCENE_TRIGGER_PATH.format(rule_id=rule_id))
@@ -74,31 +77,41 @@ class TuyaApi:
     async def request(
         self, method: str, path: str, query: Mapping[str, str] | None = None, body: object = None
     ) -> object:
+        token = await self._access_token()
         try:
-            return await self._call(method, path, query, body, await self._access_token())
+            return await self._call(method, path, query, body, token)
         except _TokenRejected:
-            self._token = None
+            # Another call may already have replaced it.
+            if self._token == token:
+                self._token = None
             return await self._call(method, path, query, body, await self._access_token())
 
     async def close(self) -> None:
+        self._closed = True
         if self._session is not None:
             await self._session.close()
             self._session = None
 
     async def _access_token(self) -> str:
-        if self._token is None or self._clock() >= self._token_expires - TOKEN_EXPIRY_MARGIN:
-            result = await self._call("GET", TOKEN_PATH, {"grant_type": "1"}, None, token="")
-            if not isinstance(result, dict) or not result.get("access_token"):
-                raise TuyaError("the token reply has no access_token")
-            self._token = str(result["access_token"])
-            self._token_expires = self._clock() + float(result.get("expire_time", 0))
-        return self._token
+        async with self._token_lock:
+            if self._token is None or self._clock() >= self._token_expires - TOKEN_EXPIRY_MARGIN:
+                result = await self._call("GET", TOKEN_PATH, {"grant_type": "1"}, None, token="")
+                if not isinstance(result, dict) or not result.get("access_token"):
+                    raise TuyaError("the token reply has no access_token")
+                try:
+                    lifetime = float(result.get("expire_time", 0))
+                except (TypeError, ValueError) as exc:
+                    raise TuyaError(f"the token reply has a bad expire_time: {result.get('expire_time')!r}") from exc
+                self._token, self._token_expires = str(result["access_token"]), self._clock() + lifetime
+            return self._token
 
     def _headers(self, method: str, path: str, query: Mapping[str, str] | None, body: bytes, token: str) -> dict:
         config = self._config
         t, nonce = str(int(self._clock() * 1000)), uuid.uuid4().hex
         to_sign = string_to_sign(method, path, query, body)
+        # Tuya's own SDKs send it on every call; without it aiohttp labels an empty POST octet-stream.
         headers = {
+            "Content-Type": "application/json",
             "client_id": config.access_id,
             "t": t,
             "nonce": nonce,
@@ -107,13 +120,13 @@ class TuyaApi:
         }
         if token:
             headers["access_token"] = token
-        if body:
-            headers["Content-Type"] = "application/json"
         return headers
 
     async def _call(
         self, method: str, path: str, query: Mapping[str, str] | None, body: object, token: str
     ) -> object:
+        if self._closed:
+            raise TuyaError("the Tuya client is closed")
         if self._session is None:
             self._session = aiohttp.ClientSession(timeout=self._timeout)
         payload = json.dumps(body).encode() if body is not None else b""
@@ -129,7 +142,8 @@ class TuyaApi:
                     raise TuyaError(f"HTTP {response.status} from {path}")
                 reply = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            raise TuyaError(f"requesting {path}: {exc!r}") from exc
+            # repr() of aiohttp's errors carries the request headers, the access token among them.
+            raise TuyaError(f"requesting {path}: {type(exc).__name__}: {exc}") from exc
         if not isinstance(reply, dict):
             raise TuyaError(f"the reply from {path} is not a JSON object")
         if not reply.get("success"):

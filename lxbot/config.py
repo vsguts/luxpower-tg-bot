@@ -3,7 +3,7 @@ import math
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import TypeVar
@@ -122,33 +122,42 @@ def schedule_config_from_env(env: Mapping[str, str]) -> ScheduleConfig | None:
     return config
 
 
+def tuya_id(value: str, name: str) -> str:
+    if not _TUYA_ID.fullmatch(value):
+        raise ConfigError(f"{name} must be a Tuya ID (letters and digits)")
+    return value
+
+
 def _tuya_scene(env: Mapping[str, str], name: str) -> str | None:
     value = env.get(name, "").strip()
-    if value and not _TUYA_ID.fullmatch(value):
-        raise ConfigError(f"{name} must be a Tuya scene ID (letters and digits)")
-    return value or None
+    return tuya_id(value, name) if value else None
 
 
-def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
+def tuya_keys_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     access_id, secret = env.get("TUYA_ACCESS_ID", "").strip(), env.get("TUYA_ACCESS_SECRET", "").strip()
-    lost, restored = _tuya_scene(env, "TUYA_SCENE_GRID_LOST"), _tuya_scene(env, "TUYA_SCENE_GRID_RESTORED")
     if not access_id and not secret:
-        if lost or restored:
-            raise ConfigError("TUYA_SCENE_* needs TUYA_ACCESS_ID and TUYA_ACCESS_SECRET")
         return None
     if not access_id or not secret:
         raise ConfigError("TUYA_ACCESS_ID and TUYA_ACCESS_SECRET must be set together")
+    api_url = (env.get("TUYA_API_URL", "").strip() or TUYA_DEFAULT_API_URL).rstrip("/")
+    # The access token travels in a header.
+    if not api_url.startswith("https://"):
+        raise ConfigError("TUYA_API_URL must be an https:// URL")
+    return TuyaConfig(access_id=access_id, access_secret=secret, api_url=api_url)
+
+
+def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
+    keys = tuya_keys_from_env(env)
+    lost, restored = _tuya_scene(env, "TUYA_SCENE_GRID_LOST"), _tuya_scene(env, "TUYA_SCENE_GRID_RESTORED")
+    if keys is None:
+        if lost or restored:
+            raise ConfigError("TUYA_SCENE_* needs TUYA_ACCESS_ID and TUYA_ACCESS_SECRET")
+        return None
     # The keys alone are what tools.tuya_scenes needs to look the scenes up: not an error, just nothing to run.
     if not lost and not restored:
         log.warning("Tuya keys are set but no TUYA_SCENE_*: no scene will run")
         return None
-    return TuyaConfig(
-        access_id=access_id,
-        access_secret=secret,
-        api_url=(env.get("TUYA_API_URL") or TUYA_DEFAULT_API_URL).rstrip("/"),
-        grid_lost_scene=lost,
-        grid_restored_scene=restored,
-    )
+    return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored)
 
 
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:

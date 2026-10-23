@@ -11,8 +11,10 @@ log = logging.getLogger(__name__)
 
 # The cloud or the home internet may blink right when the grid goes: retry for about a minute.
 RETRY_DELAYS = (10.0, 50.0)
-# A restart right after a grid change still lets a scene that is on its way finish.
-CLOSE_GRACE = 5.0
+# A restart right after a grid change still lets a scene that is on its way finish; with the notifier's
+# drain it stays inside the container's stop timeout.
+CLOSE_GRACE = 3.0
+GRID_EVENTS = frozenset({EventType.GRID_LOST, EventType.GRID_RESTORED})
 
 
 class SceneRunner(Protocol):
@@ -40,26 +42,32 @@ class SceneTrigger:
         self._scenes = scenes
         self._retry_delays = retry_delays
         self._clock = clock
-        self._tasks: set[asyncio.Task] = set()
+        self._task: asyncio.Task | None = None
 
     async def publish(self, events: Sequence[Event]) -> None:
-        await self._sink.publish(events)
-        for event in events:
-            scene = self._scenes.get(event.type)
-            if scene is None:
-                continue
-            # The poller waits for publish(); a slow cloud must not delay its next reading.
-            task = asyncio.create_task(self._run(event.type, scene), name=f"tuya-{event.type}")
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+        # A journal that cannot be written must not keep the house on the grid's settings.
+        try:
+            await self._sink.publish(events)
+        finally:
+            for event in events:
+                if event.type in GRID_EVENTS:
+                    self._start(event.type)
+
+    # A scene still retrying for the previous grid change would undo this one if it got through late.
+    def _start(self, cause: EventType) -> None:
+        if self._task is not None:
+            self._task.cancel()
+        scene = self._scenes.get(cause)
+        # The poller waits for publish(); a slow cloud must not delay its next reading.
+        self._task = asyncio.create_task(self._run(cause, scene), name=f"tuya-{cause}") if scene else None
 
     async def close(self) -> None:
-        if self._tasks:
-            await asyncio.wait(set(self._tasks), timeout=CLOSE_GRACE)
-        pending = set(self._tasks)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        task, self._task = self._task, None
+        if task is None:
+            return
+        await asyncio.wait({task}, timeout=CLOSE_GRACE)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _run(self, cause: EventType, scene: str) -> None:
         error: Exception | None = None

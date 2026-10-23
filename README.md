@@ -68,8 +68,9 @@ The scene, and so what it switches, lives in the Smart Life app; the bot only st
 
 4. Set `TUYA_SCENE_GRID_LOST` (and `TUYA_SCENE_GRID_RESTORED`, if wanted) and restart the bot.
 
-The scene starts right after the "Світло зникло" alert, about 45 s after the grid went (the debounce). A
-failed run is retried for about a minute; then the admin gets a message. Keep the project's IoT Core trial
+The scene starts together with the "Світло зникло" alert, about 45 s after the grid went (the debounce). A
+failed run is retried for one to three minutes; then the admin gets a message. A grid change cancels the
+retries left for the previous one, so a late "grid lost" scene never runs after the grid is back. Keep the project's IoT Core trial
 extended (Cloud > Cloud Services), or the API stops answering.
 
 ## Run

@@ -13,14 +13,8 @@ import os
 import sys
 from collections.abc import Mapping
 
-from lxbot.tuya.api import DEFAULT_API_URL, TuyaApi, TuyaConfig, TuyaError
-
-
-def _config(env: Mapping[str, str]) -> TuyaConfig:
-    access_id, secret = env.get("TUYA_ACCESS_ID", "").strip(), env.get("TUYA_ACCESS_SECRET", "").strip()
-    if not access_id or not secret:
-        sys.exit("TUYA_ACCESS_ID and TUYA_ACCESS_SECRET must be set in .env")
-    return TuyaConfig(access_id, secret, api_url=(env.get("TUYA_API_URL") or DEFAULT_API_URL).rstrip("/"))
+from lxbot.config import ConfigError, tuya_id, tuya_keys_from_env
+from lxbot.tuya.api import TuyaApi, TuyaError
 
 
 async def _device(api: TuyaApi, device_id: str) -> None:
@@ -47,7 +41,13 @@ async def _scenes(api: TuyaApi, home_id: str) -> None:
 
 
 async def main(env: Mapping[str, str], args: argparse.Namespace) -> None:
-    api = TuyaApi(_config(env))
+    config = tuya_keys_from_env(env)
+    if config is None:
+        raise ConfigError("TUYA_ACCESS_ID and TUYA_ACCESS_SECRET must be set in .env")
+    for name in ("device", "home", "run"):
+        if getattr(args, name):
+            tuya_id(getattr(args, name), f"--{name}")
+    api = TuyaApi(config)
     try:
         if args.device:
             await _device(api, args.device)
@@ -70,5 +70,5 @@ if __name__ == "__main__":
         parser.error("pass --device, --home or --run")
     try:
         asyncio.run(main(os.environ, arguments))
-    except TuyaError as exc:
+    except (ConfigError, TuyaError) as exc:
         sys.exit(str(exc))

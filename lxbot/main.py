@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -87,15 +87,20 @@ async def stop_background(
     drain_seconds: float = SHUTDOWN_DRAIN_SECONDS,
     *,
     others: Sequence[asyncio.Task] = (),
+    flush: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     poller_task.cancel()
     for task in others:
         task.cancel()
+    await asyncio.gather(poller_task, *others, return_exceptions=True)
+    # Work the poller started (a smart-home scene) reports into the notifier, so it ends before the drain.
+    if flush is not None:
+        await flush()
     # An alert queued just before a restart still goes out, unless Telegram is unreachable.
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(notifier.join(), drain_seconds)
     notifier_task.cancel()
-    await asyncio.gather(poller_task, notifier_task, *others, return_exceptions=True)
+    await asyncio.gather(notifier_task, return_exceptions=True)
 
 
 def _scenes(settings: Settings) -> dict[EventType, str]:
@@ -140,10 +145,11 @@ async def run(settings: Settings) -> None:
     finally:
         for task in background:
             task.remove_done_callback(on_done)
-        if scenes is not None:
-            await scenes.close()
         if background:
-            await stop_background(background[0], background[1], notifier, others=background[2:])
+            flush = scenes.close if scenes is not None else None
+            await stop_background(background[0], background[1], notifier, others=background[2:], flush=flush)
+        elif scenes is not None:
+            await scenes.close()
         if source is not None:
             await source.close()
         if tuya is not None:
