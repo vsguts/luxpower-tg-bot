@@ -119,7 +119,7 @@ async def run(settings: Settings) -> None:
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
     tuya = TuyaApi(settings.tuya) if settings.tuya else None
-    scenes = SceneTrigger(notifier, tuya, _scenes(settings)) if tuya else None
+    scenes = SceneTrigger(notifier, tuya, _scenes(settings), repeat=settings.tuya.repeat) if tuya else None
     sink: EventSink = scenes or notifier
     if schedules is not None:
         sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
@@ -130,6 +130,8 @@ async def run(settings: Settings) -> None:
     on_done = stop_when_ended(dispatcher, asyncio.current_task())
     try:
         await poller.load()
+        if scenes is not None and poller.state is not None and not poller.state.grid.value:
+            scenes.resume_outage()
         if schedules is not None:
             await schedules.load()
         background = [

@@ -157,7 +157,11 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     if not lost and not restored:
         log.warning("Tuya keys are set but no TUYA_SCENE_*: no scene will run")
         return None
-    return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored)
+    minutes = _number(env, "TUYA_SCENE_REPEAT_MINUTES", "10", int)
+    if minutes < 0:
+        raise ConfigError("TUYA_SCENE_REPEAT_MINUTES must be 0 (off) or more")
+    repeat = timedelta(minutes=minutes) if minutes else None
+    return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored, repeat=repeat)
 
 
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:

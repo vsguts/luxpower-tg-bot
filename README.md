@@ -70,7 +70,12 @@ The scene, and so what it switches, lives in the Smart Life app; the bot only st
 
 The scene starts together with the "Світло зникло" alert, about 45 s after the grid went (the debounce). A
 failed run is retried for one to three minutes; then the admin gets a message. A grid change cancels the
-retries left for the previous one, so a late "grid lost" scene never runs after the grid is back. Keep the project's IoT Core trial
+retries left for the previous one, so a late "grid lost" scene never runs after the grid is back.
+
+While the grid stays out, the grid-lost scene runs again every `TUYA_SCENE_REPEAT_MINUTES` (default 10;
+`0` runs it once), so a device switched on during the outage goes off again within that time. A bot
+restarted during an outage picks the repeats up. Repeats are not journaled, and a failing one tells the admin
+once per outage. Each run is one API call: a few cents a year at Tuya's paid rates. Keep the project's IoT Core trial
 extended (Cloud > Cloud Services), or the API stops answering.
 
 ## Run

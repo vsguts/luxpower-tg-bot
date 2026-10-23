@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 from lxbot.monitor.detector import Audience, Event, EventType
 from lxbot.tuya.api import TuyaError
@@ -171,3 +172,100 @@ async def test_a_journal_that_fails_still_runs_the_scene():
         pass
     await trigger.close()
     assert runner.calls == [LOST_SCENE]
+
+
+REPEAT = timedelta(seconds=0.05)
+
+
+def repeating(runner, scenes=SCENES):
+    sink = Sink()
+    trigger = SceneTrigger(sink, runner, scenes, retry_delays=(0, 0), repeat=REPEAT, clock=lambda: NOW)
+    return trigger, sink
+
+
+def types(sink):
+    return [e.type for e in sink.events]
+
+
+async def test_the_lost_scene_repeats_while_the_grid_is_out():
+    runner = Runner()
+    trigger, sink = repeating(runner)
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.18)
+    assert len(runner.calls) >= 3
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    calls = len(runner.calls)
+    await asyncio.sleep(0.15)
+    assert len(runner.calls) == calls
+    # The card is written once per outage, not on every repeat.
+    assert types(sink).count(EventType.TUYA_SCENE_RUN) == 1
+    await trigger.close()
+
+
+async def test_the_restored_scene_does_not_repeat():
+    runner = Runner()
+    trigger, _ = repeating(runner, SCENES | {EventType.GRID_RESTORED: "sceneBack01"})
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    await asyncio.sleep(0.15)
+    assert runner.calls == ["sceneBack01"]
+    await trigger.close()
+
+
+async def test_failed_repeats_tell_the_admin_once_per_outage():
+    runner = Runner(*[TuyaError("down")] * 50)
+    trigger, sink = repeating(runner)
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.2)
+    assert len(runner.calls) >= 5
+    assert types(sink).count(EventType.TUYA_SCENE_FAILED) == 1
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.05)
+    assert types(sink).count(EventType.TUYA_SCENE_FAILED) == 2
+    await trigger.close()
+
+
+async def test_a_repeat_that_fails_after_a_good_run_is_reported_once():
+    runner = Runner()
+    trigger, sink = repeating(runner)
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.02)
+    runner.failures = [TuyaError("down")] * 50
+    await asyncio.sleep(0.2)
+    failed = [e for e in sink.events if e.type == EventType.TUYA_SCENE_FAILED]
+    assert [(e.cause, e.detail) for e in failed] == [(EventType.GRID_LOST, "down")]
+    await trigger.close()
+
+
+async def test_an_outage_found_on_start_runs_and_repeats_the_scene():
+    runner = Runner()
+    trigger, sink = repeating(runner)
+    trigger.resume_outage()
+    await asyncio.sleep(0.12)
+    assert len(runner.calls) >= 2
+    assert types(sink) == [EventType.TUYA_SCENE_RUN]
+    await trigger.publish([Event(EventType.GRID_RESTORED, NOW)])
+    calls = len(runner.calls)
+    await asyncio.sleep(0.1)
+    assert len(runner.calls) == calls
+    await trigger.close()
+
+
+async def test_without_a_repeat_the_scene_runs_once():
+    runner = Runner()
+    trigger, _ = make_trigger(runner)
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.1)
+    assert runner.calls == [LOST_SCENE]
+    await trigger.close()
+
+
+async def test_close_stops_the_repeats():
+    runner = Runner()
+    trigger, _ = repeating(runner)
+    await trigger.publish([grid_lost()])
+    await asyncio.sleep(0.02)
+    await asyncio.wait_for(trigger.close(), timeout=1)
+    calls = len(runner.calls)
+    await asyncio.sleep(0.1)
+    assert len(runner.calls) == calls
