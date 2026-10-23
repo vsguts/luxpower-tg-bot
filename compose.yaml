@@ -7,6 +7,8 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    # Shutdown lets a smart-home scene finish and drains the alert queue; Docker's default 10 s is too tight.
+    stop_grace_period: 20s
     logging:
       driver: json-file
       options:

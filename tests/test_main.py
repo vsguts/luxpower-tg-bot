@@ -139,3 +139,17 @@ async def test_stop_background_cancels_extra_tasks(db):
     schedule_task = asyncio.create_task(asyncio.sleep(3600))
     await stop_background(poller_task, notifier_task, notifier, 0.1, others=[schedule_task])
     assert schedule_task.cancelled()
+
+
+async def test_stop_background_flushes_after_the_poller_and_before_the_drain(db):
+    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, 1, ZoneInfo("Europe/Kyiv"))
+    poller_task = asyncio.create_task(asyncio.sleep(3600))
+    notifier_task = asyncio.create_task(notifier.run())
+    seen = {}
+
+    async def flush():
+        seen["poller_done"] = poller_task.done()
+        seen["notifier_running"] = not notifier_task.done()
+
+    await stop_background(poller_task, notifier_task, notifier, 0.1, flush=flush)
+    assert seen == {"poller_done": True, "notifier_running": True}

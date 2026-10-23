@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -12,12 +12,15 @@ from aiogram.types import BotCommand
 from lxbot.bot.handlers import router
 from lxbot.config import Settings, settings_from_env
 from lxbot.luxpower.client import DongleClient
-from lxbot.monitor.poller import Poller
+from lxbot.monitor.detector import EventType
+from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
 from lxbot.storage.db import Database
+from lxbot.tuya.api import TuyaApi
+from lxbot.tuya.scenes import SceneTrigger
 
 log = logging.getLogger(__name__)
 
@@ -84,15 +87,28 @@ async def stop_background(
     drain_seconds: float = SHUTDOWN_DRAIN_SECONDS,
     *,
     others: Sequence[asyncio.Task] = (),
+    flush: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     poller_task.cancel()
     for task in others:
         task.cancel()
+    await asyncio.gather(poller_task, *others, return_exceptions=True)
+    # Work the poller started (a smart-home scene) reports into the notifier, so it ends before the drain.
+    if flush is not None:
+        await flush()
     # An alert queued just before a restart still goes out, unless Telegram is unreachable.
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(notifier.join(), drain_seconds)
     notifier_task.cancel()
-    await asyncio.gather(poller_task, notifier_task, *others, return_exceptions=True)
+    await asyncio.gather(notifier_task, return_exceptions=True)
+
+
+def _scenes(settings: Settings) -> dict[EventType, str]:
+    by_event = {
+        EventType.GRID_LOST: settings.tuya.grid_lost_scene,
+        EventType.GRID_RESTORED: settings.tuya.grid_restored_scene,
+    }
+    return {event: scene for event, scene in by_event.items() if scene}
 
 
 async def run(settings: Settings) -> None:
@@ -102,7 +118,11 @@ async def run(settings: Settings) -> None:
     notifier = Notifier(bot, db, settings.admin_chat_id, settings.tz)
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
-    sink = ScheduleAnnotator(notifier, schedules, settings.schedule.match_window) if schedules else notifier
+    tuya = TuyaApi(settings.tuya) if settings.tuya else None
+    scenes = SceneTrigger(notifier, tuya, _scenes(settings)) if tuya else None
+    sink: EventSink = scenes or notifier
+    if schedules is not None:
+        sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
     dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules)
     dispatcher.include_router(router)
@@ -126,9 +146,14 @@ async def run(settings: Settings) -> None:
         for task in background:
             task.remove_done_callback(on_done)
         if background:
-            await stop_background(background[0], background[1], notifier, others=background[2:])
+            flush = scenes.close if scenes is not None else None
+            await stop_background(background[0], background[1], notifier, others=background[2:], flush=flush)
+        elif scenes is not None:
+            await scenes.close()
         if source is not None:
             await source.close()
+        if tuya is not None:
+            await tuya.close()
         await client.close()
         await db.close()
         await bot.session.close()

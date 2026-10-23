@@ -35,6 +35,8 @@ _MONTHS = (
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
 )
 
+_SCENE_CAUSES = {EventType.GRID_LOST: "Світло зникло", EventType.GRID_RESTORED: "Світло з'явилось"}
+
 _STATUS_ICONS = {SubscriberStatus.APPROVED: "✅", SubscriberStatus.PENDING: "⏳", SubscriberStatus.REJECTED: "🚫"}
 
 
@@ -237,6 +239,9 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
             return f"⚠️ Графік відключень не оновлюється з {clock}"
         case EventType.SCHEDULE_SOURCE_UP:
             return SCHEDULE_SOURCE_UP
+        case EventType.TUYA_SCENE_FAILED:
+            cause = _SCENE_CAUSES.get(event.cause, str(event.cause))
+            return f"⚠️ Не вдалося запустити сценарій Tuya для «{cause}»: {escape(event.detail or '')}"
         case _:
             return None
 

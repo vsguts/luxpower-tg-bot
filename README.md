@@ -47,6 +47,32 @@ scrapes DTEK every ~5 minutes; it is polled at the same pace. There are no fixed
   expected next; `/status` shows the next planned change.
 - The admin is told when the source stops updating for an hour.
 
+## Tuya scenes
+
+The bot can run a Tuya (Smart Life) tap-to-run scene when the grid goes, for example to switch the
+thermostats off while the house runs on the battery, and optionally another one when it comes back.
+The scene, and so what it switches, lives in the Smart Life app; the bot only starts it.
+
+1. In Smart Life, create a tap-to-run scene with the actions you want.
+2. On [platform.tuya.com](https://platform.tuya.com), open Cloud > your project (it must be linked to the
+   Smart Life account, see its Devices tab): Overview has the Access ID and Secret, and the data center
+   (Central Europe: `https://openapi.tuyaeu.com`). Put them into `.env` as `TUYA_ACCESS_ID`,
+   `TUYA_ACCESS_SECRET` and `TUYA_API_URL`.
+3. Find the scene ID (any device ID from the project's Devices tab leads to its home) and try the scene:
+
+   ```bash
+   docker compose run --rm -T bot python -m tools.tuya_scenes --device <device id>
+   docker compose run --rm -T bot python -m tools.tuya_scenes --home <home id>
+   docker compose run --rm -T bot python -m tools.tuya_scenes --run <scene id>
+   ```
+
+4. Set `TUYA_SCENE_GRID_LOST` (and `TUYA_SCENE_GRID_RESTORED`, if wanted) and restart the bot.
+
+The scene starts together with the "Світло зникло" alert, about 45 s after the grid went (the debounce). A
+failed run is retried for one to three minutes; then the admin gets a message. A grid change cancels the
+retries left for the previous one, so a late "grid lost" scene never runs after the grid is back. Keep the project's IoT Core trial
+extended (Cloud > Cloud Services), or the API stops answering.
+
 ## Run
 
 ```bash
