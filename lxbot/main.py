@@ -12,7 +12,7 @@ from aiogram.types import BotCommand
 from lxbot.bot.handlers import router
 from lxbot.config import Settings, settings_from_env
 from lxbot.luxpower.client import DongleClient
-from lxbot.monitor.detector import EventType
+from lxbot.monitor.detector import EventType, State
 from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
 from lxbot.schedule.annotate import ScheduleAnnotator
@@ -103,6 +103,11 @@ async def stop_background(
     await asyncio.gather(notifier_task, return_exceptions=True)
 
 
+# A grid whose return is still being debounced is not out any more: people may be switching things back on.
+def grid_out(state: State | None) -> bool:
+    return state is not None and not state.grid.value and state.grid.pending_since is None
+
+
 def _scenes(settings: Settings) -> dict[EventType, str]:
     by_event = {
         EventType.GRID_LOST: settings.tuya.grid_lost_scene,
@@ -119,8 +124,14 @@ async def run(settings: Settings) -> None:
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
     tuya = TuyaApi(settings.tuya) if settings.tuya else None
-    scenes = SceneTrigger(notifier, tuya, _scenes(settings)) if tuya else None
-    sink: EventSink = scenes or notifier
+    sink: EventSink = notifier
+    scenes = None
+    if tuya is not None:
+        # The poller is built below with this trigger as its sink; the lambda reads its state at call time.
+        scenes = SceneTrigger(
+            notifier, tuya, _scenes(settings), repeat=settings.tuya.repeat, grid_out=lambda: grid_out(poller.state)
+        )
+        sink = scenes
     if schedules is not None:
         sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
@@ -130,6 +141,8 @@ async def run(settings: Settings) -> None:
     on_done = stop_when_ended(dispatcher, asyncio.current_task())
     try:
         await poller.load()
+        if scenes is not None and grid_out(poller.state):
+            scenes.resume_outage()
         if schedules is not None:
             await schedules.load()
         background = [

@@ -153,3 +153,14 @@ async def test_stop_background_flushes_after_the_poller_and_before_the_drain(db)
 
     await stop_background(poller_task, notifier_task, notifier, 0.1, flush=flush)
     assert seen == {"poller_done": True, "notifier_running": True}
+
+
+def test_grid_out_means_out_and_not_coming_back():
+    from lxbot.main import grid_out
+    from lxbot.monitor.detector import Debounced, State
+
+    gen = Debounced(False, at(0))
+    assert grid_out(State(grid=Debounced(False, at(0)), gen=gen))
+    assert not grid_out(State(grid=Debounced(False, at(0), pending_since=at(1), pending_count=1), gen=gen))
+    assert not grid_out(State(grid=Debounced(True, at(0)), gen=gen))
+    assert not grid_out(None)

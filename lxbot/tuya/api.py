@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from http import HTTPStatus
 
 import aiohttp
@@ -36,6 +37,8 @@ class TuyaConfig:
     api_url: str = DEFAULT_API_URL
     grid_lost_scene: str | None = None
     grid_restored_scene: str | None = None
+    # How often the grid-lost scene runs again while the grid is out; None runs it once.
+    repeat: timedelta | None = timedelta(minutes=10)
     timeout: float = 10.0
 
 

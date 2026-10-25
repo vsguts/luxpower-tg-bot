@@ -241,3 +241,26 @@ def test_tuya_keys_without_a_scene_only_warn(caplog):
 def test_bad_tuya_settings(extra, message):
     with pytest.raises(ConfigError, match=message):
         settings_from_env(ENV | extra)
+
+
+def test_tuya_scene_repeats_every_ten_minutes_by_default():
+    tuya = settings_from_env(ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1"}).tuya
+    assert tuya.repeat == timedelta(minutes=10)
+
+
+def test_tuya_scene_repeat_can_be_changed_or_turned_off():
+    env = ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1"}
+    assert settings_from_env(env | {"TUYA_SCENE_REPEAT_MINUTES": "15"}).tuya.repeat == timedelta(minutes=15)
+    assert settings_from_env(env | {"TUYA_SCENE_REPEAT_MINUTES": "0"}).tuya.repeat is None
+
+
+def test_an_empty_tuya_scene_repeat_means_the_default():
+    env = ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_SCENE_REPEAT_MINUTES": " "}
+    assert settings_from_env(env).tuya.repeat == timedelta(minutes=10)
+
+
+@pytest.mark.parametrize("value", ["-1", "often", "1.5", "1e3", "1_000", "٣", "1441", "99999999999999"])
+def test_bad_tuya_scene_repeat(value):
+    env = ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_SCENE_REPEAT_MINUTES": value}
+    with pytest.raises(ConfigError, match="TUYA_SCENE_REPEAT_MINUTES"):
+        settings_from_env(env)
