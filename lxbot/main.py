@@ -15,11 +15,11 @@ from lxbot.luxpower.client import DongleClient
 from lxbot.monitor.detector import EventType, State
 from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
+from lxbot.nut.server import NutServer
+from lxbot.nut.ups import InverterUps
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
-from lxbot.nut.server import NutServer
-from lxbot.nut.ups import InverterUps
 from lxbot.storage.db import Database
 from lxbot.tuya.api import TuyaApi
 from lxbot.tuya.scenes import SceneTrigger
@@ -137,7 +137,10 @@ async def run(settings: Settings) -> None:
     if schedules is not None:
         sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
-    ups = InverterUps(poller, settings.ups, settings.thresholds.battery) if settings.ups else None
+    ups = None
+    if settings.ups is not None:
+        thresholds = settings.thresholds
+        ups = InverterUps(poller, settings.ups, thresholds.battery, confirm_polls=thresholds.battery_confirm_polls)
     dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules, ups=ups)
     dispatcher.include_router(router)
     background: list[asyncio.Task] = []

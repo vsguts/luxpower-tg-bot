@@ -223,7 +223,7 @@ async def on_other(message: Message, db: Database, settings: Settings) -> None:
     subscriber = await db.get_subscriber(message.chat.id)
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
         admin = message.chat.id == settings.admin_chat_id
-        await message.answer(texts.unsupported_text(admin), reply_markup=status_keyboard())
+        await message.answer(texts.unsupported_text(admin, settings.ups is not None), reply_markup=status_keyboard())
     elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
         await message.answer(texts.REQUEST_PENDING)
     else:

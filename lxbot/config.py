@@ -170,7 +170,7 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored, repeat=repeat)
 
 
-def ups_config_from_env(env: Mapping[str, str]) -> UpsConfig | None:
+def ups_config_from_env(env: Mapping[str, str], battery: BatteryConfig | None = None) -> UpsConfig | None:
     hosts = [host.strip() for host in env.get("NUT_ALLOWED_HOSTS", "").split(",") if host.strip()]
     if not hosts:
         return None
@@ -178,9 +178,11 @@ def ups_config_from_env(env: Mapping[str, str]) -> UpsConfig | None:
         allowed = frozenset(str(ipaddress.ip_address(host)) for host in hosts)
     except ValueError as exc:
         raise ConfigError("NUT_ALLOWED_HOSTS must be IP addresses separated by commas") from exc
-    low_soc = _number(env, "NUT_LOW_SOC", "6", int)
-    if not 1 <= low_soc <= 50:
-        raise ConfigError("NUT_LOW_SOC must be between 1 and 50")
+    # One above the inverter's cut-off (BATTERY_RESERVE_SOC): below it the inverter is already off.
+    reserve = battery.reserve_soc if battery else 5
+    low_soc = _number(env, "NUT_LOW_SOC", str(reserve + 1), int)
+    if not reserve < low_soc <= 50:
+        raise ConfigError(f"NUT_LOW_SOC must be above the battery reserve ({reserve}) and at most 50")
     port = _number(env, "NUT_PORT", str(NUT_DEFAULT_PORT), int)
     if not 1 <= port <= 65535:
         raise ConfigError("NUT_PORT must be between 1 and 65535")
@@ -232,5 +234,5 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),
         tuya=tuya_config_from_env(env),
-        ups=ups_config_from_env(env),
+        ups=ups_config_from_env(env, thresholds.battery),
     )

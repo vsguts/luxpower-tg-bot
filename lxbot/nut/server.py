@@ -20,6 +20,7 @@ DEFAULT_PORT = 3493
 MAX_LINE = 1024
 # upsmon keeps its connection and polls every few seconds; a silent one is dead.
 IDLE_TIMEOUT = 300.0
+WRITE_TIMEOUT = 10.0
 BIND_RETRY = 60.0
 WRITE_COMMANDS = frozenset({"SET", "INSTCMD", "FSD", "PRIMARY", "MASTER"})
 
@@ -40,6 +41,21 @@ def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+# NUT quotes with double quotes and escapes with backslashes; an apostrophe is an ordinary character.
+def _split(line: str) -> list[str]:
+    lexer = shlex.shlex(line, posix=True)
+    lexer.whitespace_split = True
+    lexer.quotes = '"'
+    lexer.escapedquotes = '"'
+    lexer.commenters = ""
+    return list(lexer)
+
+
+# upsd compares UPS names and subcommands without regard to case.
+def _is_ups(name: str) -> bool:
+    return name.lower() == UPS_NAME
+
+
 def _client_address(peer: str) -> str:
     address = ipaddress.ip_address(peer)
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
@@ -54,6 +70,8 @@ class NutServer:
         self._host = host
         self._server: asyncio.Server | None = None
         self._logins = 0
+        # upsmon never hangs up, and Server.wait_closed() waits for every client: they are closed by hand.
+        self._clients: set[asyncio.StreamWriter] = set()
 
     @property
     def port(self) -> int:
@@ -72,13 +90,20 @@ class NutServer:
                 log.error("NUT server cannot listen on port %d: %s", self._config.port, exc)
                 await asyncio.sleep(BIND_RETRY)
         log.info("NUT server listening on port %d for %s", self.port, ", ".join(sorted(self._config.allowed_hosts)))
-        async with self._server:
-            await self._server.serve_forever()
+        # start_server() already serves. serve_forever() is avoided: cancelled, it waits for every client to
+        # hang up before this finally could close them.
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await self.close()
 
     async def close(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        if self._server is None:
+            return
+        self._server.close()
+        for writer in list(self._clients):
+            writer.close()
+        await self._server.wait_closed()
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         client = _client_address(writer.get_extra_info("peername")[0])
@@ -87,6 +112,7 @@ class NutServer:
             writer.close()
             return
         session = _Session(self)
+        self._clients.add(writer)
         try:
             while True:
                 line = await asyncio.wait_for(reader.readline(), IDLE_TIMEOUT)
@@ -95,12 +121,14 @@ class NutServer:
                 reply, done = session.handle(line.decode(errors="replace").strip())
                 if reply:
                     writer.write(reply.encode())
-                    await writer.drain()
+                    # A client that stops reading must not hold its handler (and its login) forever.
+                    await asyncio.wait_for(writer.drain(), WRITE_TIMEOUT)
                 if done:
                     break
         except (TimeoutError, ConnectionError, ValueError):
             pass
         finally:
+            self._clients.discard(writer)
             session.end()
             writer.close()
             with contextlib.suppress(ConnectionError):
@@ -121,7 +149,7 @@ class _Session:
 
     def handle(self, line: str) -> tuple[str, bool]:
         try:
-            words = shlex.split(line)
+            words = _split(line)
         except ValueError:
             return "ERR INVALID-ARGUMENT\n", False
         if not words:
@@ -130,7 +158,7 @@ class _Session:
         match command:
             case "VER":
                 return "Network UPS Tools upsd 2.8.1 (lxbot)\n", False
-            case "NETVER":
+            case "NETVER" | "PROTVER":
                 return "1.3\n", False
             case "HELP":
                 return "Commands: HELP VER NETVER GET LIST USERNAME PASSWORD LOGIN LOGOUT STARTTLS\n", False
@@ -174,16 +202,16 @@ class _Session:
         if (self._user, self._password) != (config.user, config.password):
             log.warning("NUT login as %r refused", self._user)
             return "ERR ACCESS-DENIED\n"
-        if args[0] != UPS_NAME:
+        if not _is_ups(args[0]):
             return "ERR UNKNOWN-UPS\n"
         self._logged_in = True
         self._server._logins += 1
         return "OK\n"
 
     def _get(self, args: list[str]) -> str:
-        match args:
+        match [args[0].upper(), *args[1:]] if args else args:
             case ["VAR", ups, name]:
-                if ups != UPS_NAME:
+                if not _is_ups(ups):
                     return "ERR UNKNOWN-UPS\n"
                 variables = self._server._variables()
                 if variables is None:
@@ -192,18 +220,18 @@ class _Session:
                     return "ERR VAR-NOT-SUPPORTED\n"
                 return f"VAR {UPS_NAME} {name} {_quote(variables[name])}\n"
             case ["UPSDESC", ups]:
-                return f"UPSDESC {UPS_NAME} {_quote(DESCRIPTION)}\n" if ups == UPS_NAME else "ERR UNKNOWN-UPS\n"
+                return f"UPSDESC {UPS_NAME} {_quote(DESCRIPTION)}\n" if _is_ups(ups) else "ERR UNKNOWN-UPS\n"
             case ["NUMLOGINS", ups]:
-                return f"NUMLOGINS {UPS_NAME} {self._server._logins}\n" if ups == UPS_NAME else "ERR UNKNOWN-UPS\n"
+                return f"NUMLOGINS {UPS_NAME} {self._server._logins}\n" if _is_ups(ups) else "ERR UNKNOWN-UPS\n"
             case _:
                 return "ERR INVALID-ARGUMENT\n"
 
     def _list(self, args: list[str]) -> str:
-        match args:
+        match [args[0].upper(), *args[1:]] if args else args:
             case ["UPS"]:
                 return f"BEGIN LIST UPS\nUPS {UPS_NAME} {_quote(DESCRIPTION)}\nEND LIST UPS\n"
             case ["VAR", ups]:
-                if ups != UPS_NAME:
+                if not _is_ups(ups):
                     return "ERR UNKNOWN-UPS\n"
                 variables = self._server._variables()
                 if variables is None:
@@ -211,7 +239,7 @@ class _Session:
                 lines = [f"VAR {UPS_NAME} {name} {_quote(value)}\n" for name, value in sorted(variables.items())]
                 return f"BEGIN LIST VAR {UPS_NAME}\n{''.join(lines)}END LIST VAR {UPS_NAME}\n"
             case [("RW" | "CMD" | "CLIENT") as kind, ups]:
-                if ups != UPS_NAME:
+                if not _is_ups(ups):
                     return "ERR UNKNOWN-UPS\n"
                 return f"BEGIN LIST {kind} {UPS_NAME}\nEND LIST {kind} {UPS_NAME}\n"
             case _:

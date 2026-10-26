@@ -49,25 +49,41 @@ def test_the_generator_counts_as_line_power():
     assert ups["ups.status"] == "OL"
 
 
-def test_low_battery_at_the_threshold():
-    assert variables(make_snapshot(grid=False, soc=7), state(grid=False))["ups.status"] == "OB"
-    assert variables(make_snapshot(grid=False, soc=6), state(grid=False))["ups.status"] == "OB LB"
+def test_low_battery_needs_a_confirmed_low_charge():
+    assert variables(make_snapshot(grid=False, soc=5), state(grid=False))["ups.status"] == "OB"
+    ups = ups_variables(make_snapshot(grid=False, soc=6), state(grid=False), at(0), LOW, BATTERY, low_confirmed=True)
+    assert ups["ups.status"] == "OB LB"
 
 
 def test_a_low_charge_on_line_is_not_low_battery():
-    assert variables(make_snapshot(soc=3))["ups.status"] == "OL"
+    ups = ups_variables(make_snapshot(soc=3), state(), at(0), LOW, BATTERY, low_confirmed=True)
+    assert ups["ups.status"] == "OL"
 
 
-def test_a_dongle_lost_on_a_low_battery_means_the_inverter_shut_down():
-    snapshot = make_snapshot(grid=False, soc=15)
-    later = snapshot.taken_at + timedelta(minutes=3)
-    assert variables(snapshot, state(grid=False), now=later)["ups.status"] == "OB LB"
+def lost(snapshot, current, after, battery=BATTERY, **flags):
+    return ups_variables(snapshot, current, snapshot.taken_at + after, LOW, battery, **flags)["ups.status"]
 
 
-def test_a_dongle_lost_on_a_healthy_battery_keeps_the_last_reading():
-    snapshot = make_snapshot(grid=False, soc=60)
-    later = snapshot.taken_at + timedelta(hours=1)
-    ups = variables(snapshot, state(grid=False), now=later)
+def test_a_dongle_lost_near_the_threshold_means_the_inverter_shut_down():
+    snapshot = make_snapshot(grid=False, soc=8, battery_w=-500)
+    assert lost(snapshot, state(grid=False), timedelta(minutes=3)) == "OB LB"
+
+
+def test_a_brief_gap_near_the_threshold_is_not_a_shutdown():
+    snapshot = make_snapshot(grid=False, soc=7, battery_w=-500)
+    assert lost(snapshot, state(grid=False), timedelta(seconds=60)) == "OB"
+
+
+def test_a_dongle_lost_higher_up_waits_for_the_estimated_charge():
+    # 20 % at 3 kW: 14 % of 16 kWh above the threshold lasts about 45 min.
+    snapshot = make_snapshot(grid=False, soc=20, battery_w=-3000)
+    assert lost(snapshot, state(grid=False), timedelta(minutes=40)) == "OB"
+    assert lost(snapshot, state(grid=False), timedelta(minutes=46)) == "OB LB"
+
+
+def test_a_wifi_gap_on_a_healthy_battery_keeps_the_last_reading():
+    snapshot = make_snapshot(grid=False, soc=60, battery_w=-500)
+    ups = ups_variables(snapshot, state(grid=False), snapshot.taken_at + timedelta(hours=1), LOW, BATTERY)
     assert ups["ups.status"] == "OB"
     assert ups["battery.charge"] == "60"
     # Readings that are this old say nothing about now.
@@ -75,10 +91,28 @@ def test_a_dongle_lost_on_a_healthy_battery_keeps_the_last_reading():
     assert "battery.runtime" not in ups
 
 
-def test_a_brief_gap_on_a_low_battery_is_not_a_shutdown():
-    snapshot = make_snapshot(grid=False, soc=12)
-    soon = snapshot.taken_at + timedelta(seconds=60)
-    assert variables(snapshot, state(grid=False), now=soon)["ups.status"] == "OB"
+def test_without_a_capacity_only_the_near_threshold_rule_applies():
+    snapshot = make_snapshot(grid=False, soc=20, battery_w=-3000)
+    assert lost(snapshot, state(grid=False), timedelta(hours=10), battery=None) == "OB"
+
+
+def test_an_inverter_that_died_while_the_grid_loss_was_debounced():
+    # The grid went at 6 %; the inverter shut down two polls later, before the loss was confirmed.
+    snapshot = make_snapshot(grid=False, soc=6, battery_w=-500)
+    assert lost(snapshot, state(grid=True), timedelta(minutes=3)) == "OB LB"
+
+
+def test_an_inverter_that_died_when_the_generator_stopped():
+    snapshot = make_snapshot(grid=False, gen=False, soc=5, battery_w=-500)
+    assert lost(snapshot, state(grid=False, gen=True), timedelta(minutes=3)) == "OB LB"
+
+
+def test_a_restart_with_the_dongle_gone_after_the_critical_alert():
+    critical = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)), critical_sent=True)
+    assert ups_variables(None, critical, at(0), LOW, BATTERY)["ups.status"] == "OB"
+    ups = ups_variables(None, critical, at(0), LOW, BATTERY, reading_overdue=True)
+    assert ups["ups.status"] == "OB LB"
+    assert ups_variables(None, state(grid=False), at(0), LOW, BATTERY, reading_overdue=True)["ups.status"] == "OB"
 
 
 def test_the_admin_test_reports_a_low_battery_whatever_the_reading():

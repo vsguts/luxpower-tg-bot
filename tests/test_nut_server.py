@@ -189,3 +189,28 @@ async def test_a_busy_port_is_retried_instead_of_ending_the_task(source, monkeyp
     writer.close()
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_names_and_subcommands_ignore_case(client):
+    assert await client.ask("get var UPS ups.status") == 'VAR ups ups.status "OL"'
+    assert await client.ask("list ups") == "BEGIN LIST UPS"
+
+
+async def test_an_apostrophe_is_an_ordinary_character(client):
+    assert await client.ask("GET VAR ups it's") == "ERR VAR-NOT-SUPPORTED"
+
+
+async def test_stopping_closes_a_client_that_never_hangs_up(source):
+    nut = NutServer(UpsConfig(allowed_hosts=frozenset({"127.0.0.1"}), port=0), source, host="127.0.0.1")
+    task = asyncio.create_task(nut.run())
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if nut._server is not None:
+            break
+    reader, writer = await asyncio.open_connection("127.0.0.1", nut.port)
+    writer.write(b"GET VAR ups ups.status\n")
+    await reader.readline()
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+    assert await asyncio.wait_for(reader.read(), 2) == b""
+    writer.close()

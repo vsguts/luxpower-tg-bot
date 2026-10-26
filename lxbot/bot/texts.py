@@ -277,8 +277,10 @@ def forecast_lines(forecast: Forecast | None, *, trend_pending: bool = False) ->
     return lines
 
 
-def unsupported_text(admin: bool) -> str:
-    return UNSUPPORTED + (", /subscribers, /ups_test, /ups_reset" if admin else "")
+def unsupported_text(admin: bool, ups: bool = False) -> str:
+    if not admin:
+        return UNSUPPORTED
+    return UNSUPPORTED + ", /subscribers" + (", /ups_test, /ups_reset" if ups else "")
 
 
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:

@@ -87,23 +87,32 @@ shut down, and the internet on that battery lasts longer. Any NUT client (`upsc`
 `upsmon`) can read it too.
 
 - `ups.status` is `OL` (grid or generator; `OL CHRG` while charging), `OB` on the battery alone, and `OB LB`
-  once the charge is at or below `NUT_LOW_SOC` (default 6 %, one above the inverter's 5 % cut-off). A dongle
-  lost for 2 minutes while on battery at 15 % or less also reads `OB LB`: the inverter has shut down and taken
-  the dongle with it. Lost at a higher charge, the last reading stays (more likely a Wi-Fi problem).
+  once the charge has been at or below `NUT_LOW_SOC` for two readings in a row (default: one above
+  `BATTERY_RESERVE_SOC`, the inverter's cut-off, so 6 %). One garbled reading does not count, and once
+  reported the low battery holds until the charge is 2 points higher or the grid is back.
+- When the dongle goes silent for 2 minutes on battery (the inverter shuts down and takes it along, also
+  when that happens while a grid or generator loss is still being confirmed): `OB LB` if the last charge
+  was within 2 points of the threshold, or once the charge estimated from the last discharge power reaches it.
+  A Wi-Fi gap on a healthy battery keeps the last reading.
 - Also `battery.charge`, `battery.charge.low`, `battery.runtime` (the forecast by power), `input.voltage`,
   `ups.realpower`, maker and model.
 
 Setup:
 
 1. `.env`: `NUT_ALLOWED_HOSTS=<NAS IP>` (comma-separated; nobody else may connect). DSM logs in as
-   `monuser` / `secret` to a UPS named `ups`; it cannot be told otherwise.
+   `monuser` / `secret` to a UPS named `ups` and cannot be told otherwise; `NUT_USER` / `NUT_PASSWORD` exist
+   for other clients. `NUT_PORT` changes the port inside the container: change `compose.yaml` with it.
 2. DSM > Control Panel > Hardware & Power > UPS: enable UPS support, type "Synology UPS server", server IP
    = the bot's host, Safe Mode "until low battery". DSM should show the UPS as on line with its charge.
 3. Check from any machine allowed in step 1: `upsc ups@<bot host>`.
 
 Admin test: `/ups_test` (with a confirmation) makes the UPS report `OB LB` whatever the inverter does, so the
 NAS really goes to Safe Mode; `/ups_reset` (or a bot restart) returns the real readings. `/status` reminds the
-admin while the test is on.
+admin while the test is on. How DSM leaves Safe Mode once the UPS is on line again is DSM's own behaviour;
+check it on the first test.
+
+During an outage, a NUT client counts a UPS it cannot reach for about 15 s as critical: restarting or
+redeploying the bot while on battery sends the NAS to Safe Mode.
 
 ## Run
 
