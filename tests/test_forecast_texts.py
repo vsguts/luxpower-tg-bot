@@ -92,7 +92,7 @@ def test_unsupported_text_hints_the_commands():
     assert texts.unsupported_text(admin=False) == (
         "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
     )
-    assert texts.unsupported_text(admin=True).endswith("/stop, /subscribers")
+    assert texts.unsupported_text(admin=True).endswith("/stop, /subscribers, /ups_test, /ups_reset")
 
 
 def test_a_runtime_beyond_two_days_is_capped():

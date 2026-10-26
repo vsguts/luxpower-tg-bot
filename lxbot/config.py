@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import math
 import os
@@ -14,6 +15,8 @@ from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
+from lxbot.nut.server import DEFAULT_PORT as NUT_DEFAULT_PORT
+from lxbot.nut.server import UpsConfig
 from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
 from lxbot.tuya.api import DEFAULT_API_URL as TUYA_DEFAULT_API_URL
@@ -47,6 +50,7 @@ class Settings:
     db_path: Path
     schedule: ScheduleConfig | None = None
     tuya: TuyaConfig | None = None
+    ups: UpsConfig | None = None
 
 
 def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
@@ -166,6 +170,29 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored, repeat=repeat)
 
 
+def ups_config_from_env(env: Mapping[str, str]) -> UpsConfig | None:
+    hosts = [host.strip() for host in env.get("NUT_ALLOWED_HOSTS", "").split(",") if host.strip()]
+    if not hosts:
+        return None
+    try:
+        allowed = frozenset(str(ipaddress.ip_address(host)) for host in hosts)
+    except ValueError as exc:
+        raise ConfigError("NUT_ALLOWED_HOSTS must be IP addresses separated by commas") from exc
+    low_soc = _number(env, "NUT_LOW_SOC", "6", int)
+    if not 1 <= low_soc <= 50:
+        raise ConfigError("NUT_LOW_SOC must be between 1 and 50")
+    port = _number(env, "NUT_PORT", str(NUT_DEFAULT_PORT), int)
+    if not 1 <= port <= 65535:
+        raise ConfigError("NUT_PORT must be between 1 and 65535")
+    return UpsConfig(
+        allowed_hosts=allowed,
+        low_soc=low_soc,
+        port=port,
+        user=env.get("NUT_USER", "").strip() or "monuser",
+        password=env.get("NUT_PASSWORD", "").strip() or "secret",
+    )
+
+
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:
     return DongleConfig(
         host=env["DONGLE_HOST"],
@@ -205,4 +232,5 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),
         tuya=tuya_config_from_env(env),
+        ups=ups_config_from_env(env),
     )

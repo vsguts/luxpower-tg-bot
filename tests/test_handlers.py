@@ -8,7 +8,21 @@ from aiogram.enums import ContentType
 from aiogram.types import Message
 
 from lxbot.bot import texts
-from lxbot.bot.handlers import Decision, on_decision, on_other, on_remove, on_start, on_status, on_stop, on_subscribers, router
+from lxbot.bot.handlers import (
+    Decision,
+    UpsTest,
+    on_decision,
+    on_other,
+    on_remove,
+    on_start,
+    on_status,
+    on_stop,
+    on_subscribers,
+    on_ups_reset,
+    on_ups_test,
+    on_ups_test_answer,
+    router,
+)
 from lxbot.monitor.detector import Debounced, State, initial_state
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
@@ -131,8 +145,10 @@ def test_router_registers_every_handler():
         assert callback in message_callbacks
     # The catch-all must come last, or it would answer every command.
     assert message_callbacks[-1] is on_other
-    for callback in (on_decision, on_remove):
+    for callback in (on_decision, on_remove, on_ups_test_answer):
         assert callback in query_callbacks
+    for callback in (on_ups_test, on_ups_reset):
+        assert callback in message_callbacks
 
 
 async def test_status_shows_the_next_planned_outage(db):
@@ -205,3 +221,68 @@ def test_the_catch_all_answers_only_what_a_person_sent(content_type, answered):
     (catch_all,) = [h for h in router.message.handlers if h.callback is on_other]
     update = SimpleNamespace(content_type=content_type)
     assert all(f.callback(update) for f in catch_all.filters) is answered
+
+
+def ups_query(chat_id, confirm):
+    admin_message = MagicMock(spec=Message, edit_text=AsyncMock())
+    query = SimpleNamespace(from_user=SimpleNamespace(id=chat_id), message=admin_message, answer=AsyncMock())
+    return query, UpsTest(confirm=confirm)
+
+
+async def test_ups_test_asks_the_admin_to_confirm():
+    ups, msg = SimpleNamespace(test_low=False), message(ADMIN)
+    await on_ups_test(msg, settings=make_settings(ADMIN), ups=ups)
+    assert msg.answer.await_args.args == (texts.UPS_TEST_CONFIRM,)
+    assert msg.answer.await_args.kwargs["reply_markup"] is not None
+    assert ups.test_low is False
+
+
+async def test_a_confirmed_ups_test_reports_a_low_battery_until_reset():
+    ups = SimpleNamespace(test_low=False)
+    query, data = ups_query(ADMIN, confirm=True)
+    await on_ups_test_answer(query, data, settings=make_settings(ADMIN), ups=ups)
+    assert ups.test_low is True
+    assert query.message.edit_text.await_args.args == (texts.UPS_TEST_ON,)
+    msg = message(ADMIN)
+    await on_ups_reset(msg, settings=make_settings(ADMIN), ups=ups)
+    assert ups.test_low is False
+    assert msg.answer.await_args.args == (texts.UPS_TEST_OFF,)
+
+
+async def test_a_cancelled_ups_test_changes_nothing():
+    ups = SimpleNamespace(test_low=False)
+    query, data = ups_query(ADMIN, confirm=False)
+    await on_ups_test_answer(query, data, settings=make_settings(ADMIN), ups=ups)
+    assert ups.test_low is False
+    assert query.message.edit_text.await_args.args == (texts.UPS_TEST_CANCELLED,)
+
+
+async def test_ups_commands_are_admin_only():
+    ups = SimpleNamespace(test_low=True)
+    msg = message(42)
+    await on_ups_test(msg, settings=make_settings(ADMIN), ups=ups)
+    await on_ups_reset(msg, settings=make_settings(ADMIN), ups=ups)
+    msg.answer.assert_not_awaited()
+    query, data = ups_query(42, confirm=False)
+    await on_ups_test_answer(query, data, settings=make_settings(ADMIN), ups=ups)
+    assert ups.test_low is True
+    query.message.edit_text.assert_not_awaited()
+
+
+async def test_ups_commands_without_a_nut_setup():
+    msg = message(ADMIN)
+    await on_ups_test(msg, settings=make_settings(ADMIN), ups=None)
+    assert msg.answer.await_args.args == (texts.UPS_NOT_CONFIGURED,)
+
+
+async def test_the_admin_status_shows_a_running_ups_test(db):
+    for chat_id in (ADMIN, 42):
+        await db.save_subscriber(chat_id, "x", None, SubscriberStatus.APPROVED)
+    snapshot = make_snapshot(0, soc=80)
+    poller = SimpleNamespace(latest=snapshot, state=initial_state(snapshot))
+    ups = SimpleNamespace(test_low=True)
+    admin, other = message(ADMIN), message(42)
+    await on_status(admin, db=db, settings=make_settings(ADMIN), poller=poller, ups=ups)
+    await on_status(other, db=db, settings=make_settings(ADMIN), poller=poller, ups=ups)
+    assert texts.UPS_TEST_STATUS in admin.answer.await_args.args[0]
+    assert texts.UPS_TEST_STATUS not in other.answer.await_args.args[0]

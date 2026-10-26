@@ -79,6 +79,32 @@ repeats (not the first run). Repeats are not journaled; two failing in a row tel
 outage. Each run is one API call: a few cents a year at Tuya's paid rates. Keep the project's IoT Core trial
 extended (Cloud > Cloud Services), or the API stops answering.
 
+## NAS on the inverter's UPS (NUT)
+
+The bot can present the inverter as a network UPS (Network UPS Tools, port 3493), so a Synology NAS on a
+separate battery (here an EcoFlow on the inverter's output) goes to Safe Mode once the inverter is about to
+shut down, and the internet on that battery lasts longer. Any NUT client (`upsc`, Home Assistant, Linux
+`upsmon`) can read it too.
+
+- `ups.status` is `OL` (grid or generator; `OL CHRG` while charging), `OB` on the battery alone, and `OB LB`
+  once the charge is at or below `NUT_LOW_SOC` (default 6 %, one above the inverter's 5 % cut-off). A dongle
+  lost for 2 minutes while on battery at 15 % or less also reads `OB LB`: the inverter has shut down and taken
+  the dongle with it. Lost at a higher charge, the last reading stays (more likely a Wi-Fi problem).
+- Also `battery.charge`, `battery.charge.low`, `battery.runtime` (the forecast by power), `input.voltage`,
+  `ups.realpower`, maker and model.
+
+Setup:
+
+1. `.env`: `NUT_ALLOWED_HOSTS=<NAS IP>` (comma-separated; nobody else may connect). DSM logs in as
+   `monuser` / `secret` to a UPS named `ups`; it cannot be told otherwise.
+2. DSM > Control Panel > Hardware & Power > UPS: enable UPS support, type "Synology UPS server", server IP
+   = the bot's host, Safe Mode "until low battery". DSM should show the UPS as on line with its charge.
+3. Check from any machine allowed in step 1: `upsc ups@<bot host>`.
+
+Admin test: `/ups_test` (with a confirmation) makes the UPS report `OB LB` whatever the inverter does, so the
+NAS really goes to Safe Mode; `/ups_reset` (or a bot restart) returns the real readings. `/status` reminds the
+admin while the test is on.
+
 ## Run
 
 ```bash

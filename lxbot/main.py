@@ -18,6 +18,8 @@ from lxbot.notify.broadcast import Notifier
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
+from lxbot.nut.server import NutServer
+from lxbot.nut.ups import InverterUps
 from lxbot.storage.db import Database
 from lxbot.tuya.api import TuyaApi
 from lxbot.tuya.scenes import SceneTrigger
@@ -135,7 +137,8 @@ async def run(settings: Settings) -> None:
     if schedules is not None:
         sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
-    dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules)
+    ups = InverterUps(poller, settings.ups, settings.thresholds.battery) if settings.ups else None
+    dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules, ups=ups)
     dispatcher.include_router(router)
     background: list[asyncio.Task] = []
     on_done = stop_when_ended(dispatcher, asyncio.current_task())
@@ -151,6 +154,8 @@ async def run(settings: Settings) -> None:
         ]
         if schedules is not None:
             background.append(asyncio.create_task(schedules.run(), name="schedule"))
+        if ups is not None:
+            background.append(asyncio.create_task(NutServer(settings.ups, ups.variables).run(), name="nut"))
         for task in background:
             task.add_done_callback(on_done)
         await wait_for_telegram(bot)

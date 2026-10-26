@@ -28,6 +28,15 @@ REJECTED_MARK = "❌ Відхилено"
 ALREADY_DECIDED = "Запит уже оброблено"
 NOT_FOUND = "Не знайдено"
 SCHEDULE_SOURCE_UP = "✅ Графік відключень знову оновлюється"
+UPS_NOT_CONFIGURED = "ІБП для NAS не налаштовано (NUT_ALLOWED_HOSTS у .env)."
+UPS_TEST_CONFIRM = (
+    "🧪 Показати NAS, що батарея ІБП на виході?\n"
+    "DSM перейде в безпечний режим, як після розряду інвертора. Повернути реальні дані: /ups_reset"
+)
+UPS_TEST_ON = "🧪 Тест увімкнено: NAS бачить «батарея на виході». Повернути реальні дані: /ups_reset"
+UPS_TEST_OFF = "✅ ІБП для NAS знову показує реальні дані інвертора"
+UPS_TEST_CANCELLED = "Скасовано"
+UPS_TEST_STATUS = "🧪 ІБП для NAS: тест «батарея на виході» (/ups_reset)"
 
 _WEEKDAYS = ("понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя")
 _MONTHS = (
@@ -269,7 +278,7 @@ def forecast_lines(forecast: Forecast | None, *, trend_pending: bool = False) ->
 
 
 def unsupported_text(admin: bool) -> str:
-    return UNSUPPORTED + (", /subscribers" if admin else "")
+    return UNSUPPORTED + (", /subscribers, /ups_test, /ups_reset" if admin else "")
 
 
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:
