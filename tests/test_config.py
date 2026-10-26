@@ -264,3 +264,47 @@ def test_bad_tuya_scene_repeat(value):
     env = ENV | TUYA_KEYS | {"TUYA_SCENE_GRID_LOST": "lost1", "TUYA_SCENE_REPEAT_MINUTES": value}
     with pytest.raises(ConfigError, match="TUYA_SCENE_REPEAT_MINUTES"):
         settings_from_env(env)
+
+
+def test_the_nut_ups_is_off_without_allowed_hosts():
+    assert settings_from_env(ENV).ups is None
+
+
+def test_nut_ups_defaults():
+    ups = settings_from_env(ENV | {"NUT_ALLOWED_HOSTS": " 192.168.110.110 , 192.168.120.110"}).ups
+    assert ups.allowed_hosts == frozenset({"192.168.110.110", "192.168.120.110"})
+    assert (ups.low_soc, ups.port, ups.user, ups.password) == (6, 3493, "monuser", "secret")
+
+
+def test_nut_ups_overrides():
+    env = ENV | {
+        "NUT_ALLOWED_HOSTS": "192.168.110.110",
+        "NUT_LOW_SOC": "10",
+        "NUT_PORT": "13493",
+        "NUT_USER": "upsmon",
+        "NUT_PASSWORD": "pw",
+    }
+    ups = settings_from_env(env).ups
+    assert (ups.low_soc, ups.port, ups.user, ups.password) == (10, 13493, "upsmon", "pw")
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"NUT_ALLOWED_HOSTS": "nas.lan"}, "NUT_ALLOWED_HOSTS"),
+        ({"NUT_ALLOWED_HOSTS": "192.168.110.110", "NUT_LOW_SOC": "5"}, "above the battery reserve"),
+        ({"NUT_ALLOWED_HOSTS": "192.168.110.110", "NUT_LOW_SOC": "60"}, "NUT_LOW_SOC"),
+        ({"NUT_ALLOWED_HOSTS": "192.168.110.110", "NUT_LOW_SOC": "low"}, "NUT_LOW_SOC"),
+        ({"NUT_ALLOWED_HOSTS": "192.168.110.110", "NUT_PORT": "70000"}, "NUT_PORT"),
+    ],
+)
+def test_bad_nut_settings(extra, message):
+    with pytest.raises(ConfigError, match=message):
+        settings_from_env(ENV | extra)
+
+
+def test_the_nut_threshold_follows_the_battery_reserve():
+    env = ENV | {"NUT_ALLOWED_HOSTS": "192.168.110.110", "BATTERY_CAPACITY_WH": "16000", "BATTERY_RESERVE_SOC": "10"}
+    assert settings_from_env(env).ups.low_soc == 11
+    with pytest.raises(ConfigError, match="above the battery reserve"):
+        settings_from_env(env | {"NUT_LOW_SOC": "10"})

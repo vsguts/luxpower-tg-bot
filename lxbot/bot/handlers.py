@@ -1,4 +1,5 @@
 import contextlib
+import logging
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
@@ -21,6 +22,7 @@ from lxbot.bot.subscriptions import StartOutcome
 from lxbot.config import Settings
 from lxbot.storage.db import Database, Subscriber, SubscriberStatus
 
+log = logging.getLogger(__name__)
 router = Router()
 _USER_CONTENT = frozenset(
     {
@@ -44,6 +46,10 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 class Decision(CallbackData, prefix="sub"):
     action: str
     chat_id: int
+
+
+class UpsTest(CallbackData, prefix="ups"):
+    confirm: bool
 
 
 def status_keyboard() -> ReplyKeyboardMarkup:
@@ -126,14 +132,17 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
 
 @router.message(Command("status"))
 @router.message(F.text == texts.STATUS_BUTTON)
-async def on_status(message: Message, db: Database, settings: Settings, poller, schedules=None) -> None:
+async def on_status(message: Message, db: Database, settings: Settings, poller, schedules=None, ups=None) -> None:
     if not await subscriptions.is_approved(db, message.chat.id):
         await message.answer(texts.NOT_SUBSCRIBED)
         return
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
     battery = settings.thresholds.battery
-    await message.answer(texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery))
+    text = texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery)
+    if ups is not None and ups.test_low and message.chat.id == settings.admin_chat_id:
+        text += f"\n{texts.UPS_TEST_STATUS}"
+    await message.answer(text)
 
 
 @router.message(Command("stop"))
@@ -166,6 +175,47 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
     await query.answer(texts.removed_text(subscriber.name) if subscriber else texts.NOT_FOUND)
 
 
+@router.message(Command("ups_test"))
+async def on_ups_test(message: Message, settings: Settings, ups=None) -> None:
+    if message.chat.id != settings.admin_chat_id:
+        return
+    if ups is None:
+        await message.answer(texts.UPS_NOT_CONFIGURED)
+        return
+    buttons = [
+        InlineKeyboardButton(text="🔻 Так, тестувати", callback_data=UpsTest(confirm=True).pack()),
+        InlineKeyboardButton(text="Скасувати", callback_data=UpsTest(confirm=False).pack()),
+    ]
+    await message.answer(texts.UPS_TEST_CONFIRM, reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
+
+
+@router.callback_query(UpsTest.filter())
+async def on_ups_test_answer(query: CallbackQuery, callback_data: UpsTest, settings: Settings, ups=None) -> None:
+    if query.from_user.id != settings.admin_chat_id or ups is None:
+        await query.answer()
+        return
+    if callback_data.confirm:
+        ups.test_low = True
+        log.warning("UPS test: NUT clients now see a low battery")
+    text = texts.UPS_TEST_ON if callback_data.confirm else texts.UPS_TEST_CANCELLED
+    if isinstance(query.message, Message):
+        with contextlib.suppress(TelegramBadRequest):
+            await query.message.edit_text(text)
+    await query.answer()
+
+
+@router.message(Command("ups_reset"))
+async def on_ups_reset(message: Message, settings: Settings, ups=None) -> None:
+    if message.chat.id != settings.admin_chat_id:
+        return
+    if ups is None:
+        await message.answer(texts.UPS_NOT_CONFIGURED)
+        return
+    ups.test_low = False
+    log.warning("UPS test ended: NUT clients see the inverter again")
+    await message.answer(texts.UPS_TEST_OFF)
+
+
 # Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.
 # Service messages (a pinned alert, an auto-delete timer) are not something the user said: no reply.
 @router.message(F.content_type.in_(_USER_CONTENT))
@@ -173,7 +223,7 @@ async def on_other(message: Message, db: Database, settings: Settings) -> None:
     subscriber = await db.get_subscriber(message.chat.id)
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
         admin = message.chat.id == settings.admin_chat_id
-        await message.answer(texts.unsupported_text(admin), reply_markup=status_keyboard())
+        await message.answer(texts.unsupported_text(admin, settings.ups is not None), reply_markup=status_keyboard())
     elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
         await message.answer(texts.REQUEST_PENDING)
     else:
