@@ -1,4 +1,3 @@
-import ipaddress
 import logging
 import math
 import os
@@ -15,7 +14,6 @@ from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
-from lxbot.nut.server import DEFAULT_PORT as NUT_DEFAULT_PORT
 from lxbot.nut.server import UpsConfig
 from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
@@ -171,25 +169,22 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
 
 
 def ups_config_from_env(env: Mapping[str, str], battery: BatteryConfig | None = None) -> UpsConfig | None:
-    hosts = [host.strip() for host in env.get("NUT_ALLOWED_HOSTS", "").split(",") if host.strip()]
-    if not hosts:
+    # Who may reach the port is the network's business; the server only reads and never takes commands.
+    if env.get("NUT_ALLOWED_HOSTS", "").strip():
+        log.warning("NUT_ALLOWED_HOSTS is no longer used: NUT_PORT alone turns the UPS server on")
+    if not env.get("NUT_PORT", "").strip():
         return None
-    try:
-        allowed = frozenset(str(ipaddress.ip_address(host)) for host in hosts)
-    except ValueError as exc:
-        raise ConfigError("NUT_ALLOWED_HOSTS must be IP addresses separated by commas") from exc
-    # One above the inverter's cut-off (BATTERY_RESERVE_SOC): below it the inverter is already off.
-    reserve = battery.reserve_soc if battery else 5
-    low_soc = _number(env, "NUT_LOW_SOC", str(reserve + 1), int)
-    if not reserve < low_soc <= 50:
-        raise ConfigError(f"NUT_LOW_SOC must be above the battery reserve ({reserve}) and at most 50")
-    port = _number(env, "NUT_PORT", str(NUT_DEFAULT_PORT), int)
+    port = _number(env, "NUT_PORT", "", int)
     if not 1 <= port <= 65535:
         raise ConfigError("NUT_PORT must be between 1 and 65535")
+    # One above the inverter's cut-off (BATTERY_RESERVE_SOC): below it the inverter is already off.
+    reserve = battery.reserve_soc if battery else 5
+    low_soc = _number(env, "NUT_LOW_SOC", "", int) if env.get("NUT_LOW_SOC", "").strip() else reserve + 1
+    if not reserve < low_soc <= 50:
+        raise ConfigError(f"NUT_LOW_SOC must be above the battery reserve ({reserve}) and at most 50")
     return UpsConfig(
-        allowed_hosts=allowed,
-        low_soc=low_soc,
         port=port,
+        low_soc=low_soc,
         user=env.get("NUT_USER", "").strip() or "monuser",
         password=env.get("NUT_PASSWORD", "").strip() or "secret",
     )

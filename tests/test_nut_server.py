@@ -42,7 +42,7 @@ async def source():
 
 @pytest.fixture
 async def server(source):
-    config = UpsConfig(allowed_hosts=frozenset({"127.0.0.1"}), port=0)
+    config = UpsConfig(port=0)
     nut = NutServer(config, source, host="127.0.0.1")
     await nut.start()
     yield nut
@@ -140,23 +140,6 @@ async def test_a_quoted_argument_is_one_word(client):
     assert await client.ask('GET VAR "ups" "ups.status"') == 'VAR ups ups.status "OL"'
 
 
-async def test_a_host_not_allowed_is_dropped(source):
-    config = UpsConfig(allowed_hosts=frozenset({"192.168.110.110"}), port=0)
-    nut = NutServer(config, source, host="127.0.0.1")
-    await nut.start()
-    try:
-        reader, writer = await asyncio.open_connection("127.0.0.1", nut.port)
-        writer.write(b"GET VAR ups ups.status\n")
-        try:
-            reply = await asyncio.wait_for(reader.read(), 2)
-        except ConnectionResetError:
-            reply = b""
-        assert reply == b""
-        writer.close()
-    finally:
-        await nut.close()
-
-
 async def test_an_overlong_line_ends_the_connection(client):
     client.writer.write(b"GET " + b"x" * 5000 + b"\n")
     await client.writer.drain()
@@ -164,7 +147,7 @@ async def test_an_overlong_line_ends_the_connection(client):
 
 
 async def test_the_config_hides_the_password():
-    config = UpsConfig(allowed_hosts=frozenset({"192.168.110.110"}), password="hidden")
+    config = UpsConfig(password="hidden")
     assert "hidden" not in repr(config)
     assert (config.user, config.port, config.low_soc) == ("monuser", 3493, 6)
 
@@ -173,7 +156,7 @@ async def test_a_busy_port_is_retried_instead_of_ending_the_task(source, monkeyp
     monkeypatch.setattr("lxbot.nut.server.BIND_RETRY", 0.01)
     holder = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
     port = holder.sockets[0].getsockname()[1]
-    nut = NutServer(UpsConfig(allowed_hosts=frozenset({"127.0.0.1"}), port=port), source, host="127.0.0.1")
+    nut = NutServer(UpsConfig(port=port), source, host="127.0.0.1")
     task = asyncio.create_task(nut.run())
     await asyncio.sleep(0.05)
     assert not task.done()
@@ -201,7 +184,7 @@ async def test_an_apostrophe_is_an_ordinary_character(client):
 
 
 async def test_stopping_closes_a_client_that_never_hangs_up(source):
-    nut = NutServer(UpsConfig(allowed_hosts=frozenset({"127.0.0.1"}), port=0), source, host="127.0.0.1")
+    nut = NutServer(UpsConfig(port=0), source, host="127.0.0.1")
     task = asyncio.create_task(nut.run())
     for _ in range(100):
         await asyncio.sleep(0.01)

@@ -99,15 +99,17 @@ shut down, and the internet on that battery lasts longer. Any NUT client (`upsc`
 
 Setup:
 
-1. `.env`: `NUT_ALLOWED_HOSTS=<NAS IP>` (comma-separated; nobody else may connect). DSM logs in as
-   `monuser` / `secret` to a UPS named `ups` and cannot be told otherwise; `NUT_USER` / `NUT_PASSWORD` exist
-   for other clients. `NUT_PORT` changes the port inside the container: change `compose.yaml` with it.
+1. `.env`: `NUT_PORT=3493` turns the server on (empty: off). It only reads: anyone who can reach the port
+   sees the inverter's state, nobody can change anything; who may reach it is up to the network's rules.
+   `compose.yaml` publishes 3493, so a different port needs both changed. DSM logs in as `monuser` / `secret`
+   to a UPS named `ups` and cannot be told otherwise; `NUT_USER` / `NUT_PASSWORD` exist for other clients.
 2. DSM > Control Panel > Hardware & Power > UPS: enable UPS support, type "Synology UPS server", server IP
-   = the bot's host, Safe Mode "until low battery". DSM should show the UPS as on line with its charge.
-3. Check from any machine allowed in step 1: `upsc ups@<bot host>`.
+   = the bot's host, "Time before Synology NAS enters Standby Mode": "Same as server" (that is, on the low
+   battery this server reports). Device Information should show LuxPower SNA6000 WPV with its charge.
+3. Check from any machine: `upsc ups@<bot host>`.
 
 Admin test: `/ups_test` (with a confirmation) makes the UPS report `OB LB` whatever the inverter does, so the
-NAS really goes to Safe Mode; `/ups_reset` (or a bot restart) returns the real readings. `/status` reminds the
+NAS really goes to Standby (Safe) Mode; `/ups_reset` (or a bot restart) returns the real readings. `/status` reminds the
 admin while the test is on. How DSM leaves Safe Mode once the UPS is on line again is DSM's own behaviour;
 check it on the first test.
 

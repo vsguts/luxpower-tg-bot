@@ -28,7 +28,7 @@ REJECTED_MARK = "❌ Відхилено"
 ALREADY_DECIDED = "Запит уже оброблено"
 NOT_FOUND = "Не знайдено"
 SCHEDULE_SOURCE_UP = "✅ Графік відключень знову оновлюється"
-UPS_NOT_CONFIGURED = "ІБП для NAS не налаштовано (NUT_ALLOWED_HOSTS у .env)."
+UPS_NOT_CONFIGURED = "ІБП для NAS вимкнено (NUT_PORT у .env)."
 UPS_TEST_CONFIRM = (
     "🧪 Показати NAS, що батарея ІБП на виході?\n"
     "DSM перейде в безпечний режим, як після розряду інвертора. Повернути реальні дані: /ups_reset"
