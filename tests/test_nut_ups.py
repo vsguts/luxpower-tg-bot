@@ -5,7 +5,7 @@ from lxbot.nut.server import UpsConfig
 from lxbot.nut.ups import InverterUps
 from tests.factories import at, make_snapshot
 
-CONFIG = UpsConfig(allowed_hosts=frozenset({"192.168.110.110"}), low_soc=6)
+CONFIG = UpsConfig(low_soc=6)
 
 
 def test_the_ups_reads_the_poller_live():

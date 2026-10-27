@@ -6,7 +6,7 @@ services:
       DB_PATH: /app/data/bot.sqlite3
     volumes:
       - ./data:/app/data
-    # NUT: the inverter as a network UPS for the NAS (NUT_ALLOWED_HOSTS limits who may connect)
+    # NUT: the inverter as a network UPS for the NAS; listens only with NUT_PORT set (keep the two in step)
     ports:
       - "3493:3493"
     restart: unless-stopped

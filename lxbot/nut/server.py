@@ -5,7 +5,6 @@ Protocol: https://networkupstools.org/docs/developer-guide.chunked/net-protocol.
 
 import asyncio
 import contextlib
-import ipaddress
 import logging
 import shlex
 from collections.abc import Callable
@@ -27,9 +26,8 @@ WRITE_COMMANDS = frozenset({"SET", "INSTCMD", "FSD", "PRIMARY", "MASTER"})
 
 @dataclass(frozen=True)
 class UpsConfig:
-    allowed_hosts: frozenset[str]
-    low_soc: int = 6
     port: int = DEFAULT_PORT
+    low_soc: int = 6
     user: str = "monuser"
     password: str = field(default="secret", repr=False)
 
@@ -54,13 +52,6 @@ def _split(line: str) -> list[str]:
 # upsd compares UPS names and subcommands without regard to case.
 def _is_ups(name: str) -> bool:
     return name.lower() == UPS_NAME
-
-
-def _client_address(peer: str) -> str:
-    address = ipaddress.ip_address(peer)
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return str(address)
 
 
 class NutServer:
@@ -89,7 +80,7 @@ class NutServer:
             except OSError as exc:
                 log.error("NUT server cannot listen on port %d: %s", self._config.port, exc)
                 await asyncio.sleep(BIND_RETRY)
-        log.info("NUT server listening on port %d for %s", self.port, ", ".join(sorted(self._config.allowed_hosts)))
+        log.info("NUT server listening on port %d", self.port)
         # start_server() already serves. serve_forever() is avoided: cancelled, it waits for every client to
         # hang up before this finally could close them.
         try:
@@ -106,11 +97,6 @@ class NutServer:
         await self._server.wait_closed()
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        client = _client_address(writer.get_extra_info("peername")[0])
-        if client not in self._config.allowed_hosts:
-            log.warning("NUT connection from %s refused", client)
-            writer.close()
-            return
         session = _Session(self)
         self._clients.add(writer)
         try:
