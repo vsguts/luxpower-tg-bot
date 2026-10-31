@@ -114,7 +114,7 @@ class SlowSender:
 
 async def start_background(db, sender):
     await db.save_subscriber(10, "A", None, SubscriberStatus.APPROVED)
-    notifier = Notifier(sender, db, 1, ZoneInfo("Europe/Kyiv"))
+    notifier = Notifier(sender, db, [1], ZoneInfo("Europe/Kyiv"))
     notifier_task = asyncio.create_task(notifier.run())
     poller_task = asyncio.create_task(asyncio.sleep(10))
     await notifier.publish([Event(EventType.GRID_LOST, at(0), 80, previous_duration=at(0) - at(0))])
@@ -138,7 +138,7 @@ async def test_shutdown_gives_up_on_a_stuck_queue(db):
 
 
 async def test_stop_background_cancels_extra_tasks(db):
-    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, 1, ZoneInfo("Europe/Kyiv"))
+    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, [1], ZoneInfo("Europe/Kyiv"))
     poller_task = asyncio.create_task(asyncio.sleep(3600))
     notifier_task = asyncio.create_task(notifier.run())
     schedule_task = asyncio.create_task(asyncio.sleep(3600))
@@ -147,7 +147,7 @@ async def test_stop_background_cancels_extra_tasks(db):
 
 
 async def test_stop_background_flushes_after_the_poller_and_before_the_drain(db):
-    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, 1, ZoneInfo("Europe/Kyiv"))
+    notifier = Notifier(SimpleNamespace(send_message=AsyncMock()), db, [1], ZoneInfo("Europe/Kyiv"))
     poller_task = asyncio.create_task(asyncio.sleep(3600))
     notifier_task = asyncio.create_task(notifier.run())
     seen = {}

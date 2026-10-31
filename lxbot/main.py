@@ -132,7 +132,7 @@ async def run(settings: Settings) -> None:
     db = await Database.open(settings.db_path)
     client = device_client(settings.device)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    notifier = Notifier(bot, db, settings.admin_chat_id, settings.tz, generator=settings.has_generator)
+    notifier = Notifier(bot, db, settings.admin_chat_ids, settings.tz, generator=settings.has_generator)
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
     tuya = TuyaApi(settings.tuya) if settings.tuya else None

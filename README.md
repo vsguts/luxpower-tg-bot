@@ -127,7 +127,8 @@ docker compose logs -f
 ```
 
 Then send `/start` to the bot from the admin account: Telegram lets a bot write only to users who
-started it, so until then the access request cards cannot reach the admin.
+started it, so until then the access request cards cannot reach the admin. `ADMIN_CHAT_ID` can list several
+admins (`111,222`): each gets the request cards and the admin alerts, and any of them can approve.
 
 Update: `git pull && docker compose up -d --build`. The SQLite database (subscribers, event
 journal, detector state) is in `./data`; back it up.

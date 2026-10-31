@@ -6,7 +6,7 @@ ADMIN = 1
 
 
 async def start(db, chat_id):
-    return await subscriptions.start(db, chat_id, "Оля", "olya", ADMIN)
+    return await subscriptions.start(db, chat_id, "Оля", "olya", [ADMIN])
 
 
 async def test_new_user_requests_access(db):
@@ -70,3 +70,7 @@ async def test_removed_user_needs_nothing_and_cannot_return(db):
     assert removed.status is SubscriberStatus.REJECTED
     assert await start(db, 42) is StartOutcome.REJECTED
     assert await subscriptions.remove(db, 7) is None
+
+
+async def test_every_admin_is_subscribed_at_once(db):
+    assert await subscriptions.start(db, 2, "Друг", None, [ADMIN, 2]) is StartOutcome.SUBSCRIBED

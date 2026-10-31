@@ -30,7 +30,7 @@ class Notifier:
         self,
         sender: Sender,
         db: Database,
-        admin_chat_id: int,
+        admin_chat_ids: Sequence[int],
         tz: tzinfo,
         *,
         generator: bool = True,
@@ -38,7 +38,7 @@ class Notifier:
     ):
         self._sender = sender
         self._db = db
-        self._admin_chat_id = admin_chat_id
+        self._admin_chat_ids = list(admin_chat_ids)
         self._tz = tz
         self._generator = generator
         self._retry_base = retry_base
@@ -68,7 +68,7 @@ class Notifier:
 
     async def _recipients(self, audience: Audience) -> list[int]:
         if audience is Audience.ADMIN:
-            return [self._admin_chat_id]
+            return list(self._admin_chat_ids)
         return [s.chat_id for s in await self._db.subscribers(SubscriberStatus.APPROVED)]
 
     async def _deliver(self, chat_id: int, text: str, silent: bool = False) -> None:

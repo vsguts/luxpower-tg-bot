@@ -21,7 +21,7 @@ ENV = {
 
 def test_defaults():
     settings = settings_from_env(ENV)
-    assert settings.admin_chat_id == 12345
+    assert settings.admin_chat_ids == (12345,)
     assert settings.device.host == "inverter.lan"
     assert settings.device.port == 8000
     assert settings.poll_interval == 15
@@ -362,3 +362,15 @@ def test_bad_has_generator():
 def test_empty_poll_interval_means_the_device_default():
     assert settings_from_env(ENV | {"POLL_INTERVAL": ""}).poll_interval == 15
     assert settings_from_env(ECOFLOW_ENV | {"POLL_INTERVAL": " "}).poll_interval == 30
+
+
+def test_several_admins_are_separated_by_commas():
+    settings = settings_from_env(ENV | {"ADMIN_CHAT_ID": "12345, 67890,12345"})
+    assert settings.admin_chat_ids == (12345, 67890)
+    assert settings.is_admin(67890) and not settings.is_admin(1)
+
+
+@pytest.mark.parametrize("value", ["12345,,67890", "12345;67890", "@olya"])
+def test_bad_admin_list_is_named(value):
+    with pytest.raises(ConfigError, match="ADMIN_CHAT_ID"):
+        settings_from_env(ENV | {"ADMIN_CHAT_ID": value})

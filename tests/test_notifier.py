@@ -40,7 +40,7 @@ async def deliver(notifier: Notifier, events) -> None:
 
 
 def make_notifier(sender, db) -> Notifier:
-    return Notifier(sender, db, ADMIN, ZoneInfo("Europe/Kyiv"), retry_base=0)
+    return Notifier(sender, db, [ADMIN], ZoneInfo("Europe/Kyiv"), retry_base=0)
 
 
 async def test_subscriber_events_go_to_approved_subscribers(db, subscribers):
@@ -103,6 +103,13 @@ async def test_silent_events_are_sent_without_a_sound(db, subscribers):
 
 async def test_without_a_generator_alerts_do_not_mention_one(db, subscribers):
     sender = FakeSender()
-    notifier = Notifier(sender, db, ADMIN, ZoneInfo("Europe/Kyiv"), generator=False, retry_base=0)
+    notifier = Notifier(sender, db, [ADMIN], ZoneInfo("Europe/Kyiv"), generator=False, retry_base=0)
     await deliver(notifier, [Event(EventType.BATTERY_CRITICAL, at(0), 15)])
     assert sender.sent and all("генератор" not in text.lower() for _, text in sender.sent)
+
+
+async def test_admin_events_go_to_every_admin(db, subscribers):
+    sender = FakeSender()
+    notifier = Notifier(sender, db, [ADMIN, 2], ZoneInfo("Europe/Kyiv"), retry_base=0)
+    await deliver(notifier, [Event(EventType.DEVICE_DOWN, at(0))])
+    assert [chat_id for chat_id, _ in sender.sent] == [ADMIN, 2]

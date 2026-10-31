@@ -49,7 +49,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
-    admin_chat_id: int
+    admin_chat_ids: tuple[int, ...]
     device: DeviceConfig
     thresholds: Thresholds
     poll_interval: float
@@ -59,6 +59,9 @@ class Settings:
     tuya: TuyaConfig | None = None
     ups: UpsConfig | None = None
     has_generator: bool = True
+
+    def is_admin(self, chat_id: int) -> bool:
+        return chat_id in self.admin_chat_ids
 
 
 def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
@@ -94,6 +97,14 @@ def _serial(env: Mapping[str, str], name: str) -> str:
     if len(value) != SERIAL_LEN or not value.isascii():
         raise ConfigError(f"{name} must be {SERIAL_LEN} ASCII characters")
     return value
+
+
+def _admin_ids(env: Mapping[str, str]) -> tuple[int, ...]:
+    try:
+        ids = [int(part) for part in env["ADMIN_CHAT_ID"].split(",")]
+    except ValueError as exc:
+        raise ConfigError("ADMIN_CHAT_ID must be a Telegram user id, or several separated by commas") from exc
+    return tuple(dict.fromkeys(ids))
 
 
 def _flag(env: Mapping[str, str], name: str, default: bool) -> bool:
@@ -249,7 +260,7 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         raise ConfigError("thresholds must satisfy SOC_CRITICAL < SOC_LOW < SOC_GEN_FULL")
     return Settings(
         bot_token=env["BOT_TOKEN"],
-        admin_chat_id=_number(env, "ADMIN_CHAT_ID", "", int),
+        admin_chat_ids=_admin_ids(env),
         device=dongle_config_from_env(env) if device == LUXPOWER else ecoflow_config_from_env(env),
         thresholds=thresholds,
         poll_interval=_positive(env, "POLL_INTERVAL", _POLL_INTERVALS[device]),
