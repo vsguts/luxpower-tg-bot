@@ -145,3 +145,23 @@ def test_a_tuya_scene_run_is_only_journaled():
     assert event.audience == Audience.JOURNAL
     assert event.to_payload()["cause"] == "grid_lost"
     assert event.to_payload()["detail"] == "lost1"
+
+
+@pytest.mark.parametrize("event_type", [EventType.BATTERY_LOW, EventType.BATTERY_CRITICAL])
+def test_battery_alerts_without_a_generator_do_not_mention_one(event_type):
+    text = texts.event_text(Event(event_type, at(0), 30), KYIV, generator=False)
+    assert "30%" in text
+    assert "генератор" not in text.lower()
+
+
+def test_status_text_without_a_generator_has_no_generator_line():
+    snapshot = make_snapshot(0, soc=76)
+    state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
+    text = texts.status_text(snapshot, state, at(1), KYIV, generator=False)
+    assert "Генератор" not in text
+    assert "🔋 Батарея: 76%" in text
+
+
+def test_subscribed_text_follows_the_generator():
+    assert "генератор" in texts.subscribed_text(True)
+    assert "генератор" not in texts.subscribed_text(False)

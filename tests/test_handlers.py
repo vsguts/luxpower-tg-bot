@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiogram.enums import ContentType
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.methods import SendMessage
 from aiogram.types import Message
 
 from lxbot.bot import texts
@@ -286,3 +288,41 @@ async def test_the_admin_status_shows_a_running_ups_test(db):
     await on_status(other, db=db, settings=make_settings(ADMIN), poller=poller, ups=ups)
     assert texts.UPS_TEST_STATUS in admin.answer.await_args.args[0]
     assert texts.UPS_TEST_STATUS not in other.answer.await_args.args[0]
+
+
+async def test_approval_without_a_generator_does_not_promise_generator_alerts(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=ADMIN), message=None, answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    settings = replace(make_settings(ADMIN), has_generator=False)
+    await on_decision(query, Decision(action="approve", chat_id=42), db=db, settings=settings, bot=bot)
+    assert bot.send_message.await_args.args == (42, texts.SUBSCRIBED_NO_GENERATOR)
+
+
+def two_admins():
+    return replace(make_settings(ADMIN), admin_chat_ids=(ADMIN, 2))
+
+
+async def test_the_request_goes_to_every_admin_even_if_one_cannot_be_reached(db):
+    forbidden = TelegramForbiddenError(SendMessage(chat_id=ADMIN, text="x"), "bot was blocked by the user")
+    msg, bot = message(42), SimpleNamespace(send_message=AsyncMock(side_effect=[forbidden, None]))
+    await on_start(msg, db=db, settings=two_admins(), bot=bot)
+    assert [call.args[0] for call in bot.send_message.await_args_list] == [ADMIN, 2]
+    msg.answer.assert_awaited_once_with(texts.REQUEST_SENT)
+
+
+async def test_any_admin_can_decide(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=2), message=None, answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    await on_decision(query, Decision(action="approve", chat_id=42), db=db, settings=two_admins(), bot=bot)
+    assert (await db.get_subscriber(42)).status is SubscriberStatus.APPROVED
+
+
+async def test_admins_are_not_offered_for_removal(db):
+    for chat_id in (ADMIN, 2, 42):
+        await db.save_subscriber(chat_id, f"user {chat_id}", None, SubscriberStatus.APPROVED)
+    msg = message(2)
+    await on_subscribers(msg, db=db, settings=two_admins())
+    rows = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    assert len(rows) == 1

@@ -10,8 +10,9 @@ from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.types import BotCommand
 
 from lxbot.bot.handlers import router
-from lxbot.config import Settings, settings_from_env
-from lxbot.luxpower.client import DongleClient
+from lxbot.config import DeviceConfig, Settings, settings_from_env
+from lxbot.ecoflow.client import EcoFlowClient
+from lxbot.luxpower.client import DongleClient, DongleConfig
 from lxbot.monitor.detector import EventType, State
 from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
@@ -30,18 +31,23 @@ TELEGRAM_RETRY_DELAY = 30.0
 SHUTDOWN_DRAIN_SECONDS = 5.0
 _UNREACHABLE = (TelegramNetworkError, TelegramServerError)
 
-COMMANDS = [
-    BotCommand(command="start", description="Підписатися на сповіщення"),
-    BotCommand(command="status", description="Стан мережі, генератора і батареї"),
-    BotCommand(command="stop", description="Відписатися"),
-]
+
+def bot_commands(generator: bool) -> list[BotCommand]:
+    status = "Стан мережі, генератора і батареї" if generator else "Стан мережі і батареї"
+    return [
+        BotCommand(command="start", description="Підписатися на сповіщення"),
+        BotCommand(command="status", description=status),
+        BotCommand(command="stop", description="Відписатися"),
+    ]
 
 
 # After a blackout the house is back before the ISP: keep the monitor running and wait for Telegram.
-async def wait_for_telegram(bot: Bot, retry_delay: float = TELEGRAM_RETRY_DELAY) -> None:
+async def wait_for_telegram(
+    bot: Bot, commands: list[BotCommand], retry_delay: float = TELEGRAM_RETRY_DELAY
+) -> None:
     while True:
         try:
-            await bot.set_my_commands(COMMANDS)
+            await bot.set_my_commands(commands)
             return
         except _UNREACHABLE as exc:
             log.warning("Telegram is unreachable, retrying in %.0f s: %s", retry_delay, exc)
@@ -106,6 +112,10 @@ async def stop_background(
 
 
 # A grid whose return is still being debounced is not out any more: people may be switching things back on.
+def device_client(config: DeviceConfig) -> DongleClient | EcoFlowClient:
+    return DongleClient(config) if isinstance(config, DongleConfig) else EcoFlowClient(config)
+
+
 def grid_out(state: State | None) -> bool:
     return state is not None and not state.grid.value and state.grid.pending_since is None
 
@@ -120,9 +130,9 @@ def _scenes(settings: Settings) -> dict[EventType, str]:
 
 async def run(settings: Settings) -> None:
     db = await Database.open(settings.db_path)
-    client = DongleClient(settings.dongle)
+    client = device_client(settings.device)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    notifier = Notifier(bot, db, settings.admin_chat_id, settings.tz)
+    notifier = Notifier(bot, db, settings.admin_chat_ids, settings.tz, generator=settings.has_generator)
     source = HttpScheduleSource(settings.schedule.url) if settings.schedule else None
     schedules = ScheduleService(source, db, notifier, settings.schedule, settings.tz) if source else None
     tuya = TuyaApi(settings.tuya) if settings.tuya else None
@@ -161,7 +171,7 @@ async def run(settings: Settings) -> None:
             background.append(asyncio.create_task(NutServer(settings.ups, ups.variables).run(), name="nut"))
         for task in background:
             task.add_done_callback(on_done)
-        await wait_for_telegram(bot)
+        await wait_for_telegram(bot, bot_commands(settings.has_generator))
         await poll_telegram(dispatcher, bot)
     finally:
         for task in background:

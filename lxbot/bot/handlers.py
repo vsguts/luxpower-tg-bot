@@ -88,10 +88,10 @@ def subscriber_buttons(subscriber: Subscriber) -> list[InlineKeyboardButton]:
 async def on_start(message: Message, db: Database, settings: Settings, bot: Bot) -> None:
     user = message.from_user
     chat_id = message.chat.id
-    outcome = await subscriptions.start(db, chat_id, user.full_name, user.username, settings.admin_chat_id)
+    outcome = await subscriptions.start(db, chat_id, user.full_name, user.username, settings.admin_chat_ids)
     match outcome:
         case StartOutcome.SUBSCRIBED:
-            await message.answer(texts.SUBSCRIBED, reply_markup=status_keyboard())
+            await message.answer(texts.subscribed_text(settings.has_generator), reply_markup=status_keyboard())
         case StartOutcome.ALREADY:
             await message.answer(texts.ALREADY_SUBSCRIBED, reply_markup=status_keyboard())
         case StartOutcome.PENDING:
@@ -100,16 +100,18 @@ async def on_start(message: Message, db: Database, settings: Settings, bot: Bot)
             await message.answer(texts.REQUEST_REJECTED)
         case StartOutcome.REQUESTED:
             await message.answer(texts.REQUEST_SENT)
-            await bot.send_message(
-                settings.admin_chat_id,
-                texts.admin_request_text(user.full_name, user.username, chat_id),
-                reply_markup=approval_keyboard(chat_id),
-            )
+            request = texts.admin_request_text(user.full_name, user.username, chat_id)
+            for admin in settings.admin_chat_ids:
+                # An admin who never opened the bot cannot be written to; the others still get the request.
+                try:
+                    await bot.send_message(admin, request, reply_markup=approval_keyboard(chat_id))
+                except (TelegramForbiddenError, TelegramBadRequest) as exc:
+                    log.warning("cannot send the request to admin %s: %s", admin, exc)
 
 
 @router.callback_query(Decision.filter(F.action.in_({"approve", "reject"})))
 async def on_decision(query: CallbackQuery, callback_data: Decision, db: Database, settings: Settings, bot: Bot) -> None:
-    if query.from_user.id != settings.admin_chat_id:
+    if not settings.is_admin(query.from_user.id):
         await query.answer()
         return
     approve = callback_data.action == "approve"
@@ -119,7 +121,8 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
         return
     with contextlib.suppress(TelegramForbiddenError):
         if approve:
-            await bot.send_message(subscriber.chat_id, texts.SUBSCRIBED, reply_markup=status_keyboard())
+            text = texts.subscribed_text(settings.has_generator)
+            await bot.send_message(subscriber.chat_id, text, reply_markup=status_keyboard())
         else:
             await bot.send_message(subscriber.chat_id, texts.REQUEST_REJECTED)
     # Telegram hands over an inaccessible message for requests older than ~48 h; the decision is already stored.
@@ -139,8 +142,10 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
     battery = settings.thresholds.battery
-    text = texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery)
-    if ups is not None and ups.test_low and message.chat.id == settings.admin_chat_id:
+    text = texts.status_text(
+        poller.latest, poller.state, now, settings.tz, schedule, battery, generator=settings.has_generator
+    )
+    if ups is not None and ups.test_low and settings.is_admin(message.chat.id):
         text += f"\n{texts.UPS_TEST_STATUS}"
     await message.answer(text)
 
@@ -153,13 +158,13 @@ async def on_stop(message: Message, db: Database) -> None:
 
 @router.message(Command("subscribers"))
 async def on_subscribers(message: Message, db: Database, settings: Settings) -> None:
-    if message.chat.id != settings.admin_chat_id:
+    if not settings.is_admin(message.chat.id):
         return
     subscribers = await db.subscribers(*_LIST_ACTIONS)
     if not subscribers:
         await message.answer(texts.NO_SUBSCRIBERS)
         return
-    rows = [subscriber_buttons(s) for s in subscribers if s.chat_id != settings.admin_chat_id]
+    rows = [subscriber_buttons(s) for s in subscribers if not settings.is_admin(s.chat_id)]
     await message.answer(
         texts.subscribers_text(subscribers),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
@@ -168,7 +173,7 @@ async def on_subscribers(message: Message, db: Database, settings: Settings) -> 
 
 @router.callback_query(Decision.filter(F.action == "remove"))
 async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database, settings: Settings) -> None:
-    if query.from_user.id != settings.admin_chat_id:
+    if not settings.is_admin(query.from_user.id):
         await query.answer()
         return
     subscriber = await subscriptions.remove(db, callback_data.chat_id)
@@ -177,7 +182,7 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
 
 @router.message(Command("ups_test"))
 async def on_ups_test(message: Message, settings: Settings, ups=None) -> None:
-    if message.chat.id != settings.admin_chat_id:
+    if not settings.is_admin(message.chat.id):
         return
     if ups is None:
         await message.answer(texts.UPS_NOT_CONFIGURED)
@@ -191,7 +196,7 @@ async def on_ups_test(message: Message, settings: Settings, ups=None) -> None:
 
 @router.callback_query(UpsTest.filter())
 async def on_ups_test_answer(query: CallbackQuery, callback_data: UpsTest, settings: Settings, ups=None) -> None:
-    if query.from_user.id != settings.admin_chat_id or ups is None:
+    if not settings.is_admin(query.from_user.id) or ups is None:
         await query.answer()
         return
     if callback_data.confirm:
@@ -206,7 +211,7 @@ async def on_ups_test_answer(query: CallbackQuery, callback_data: UpsTest, setti
 
 @router.message(Command("ups_reset"))
 async def on_ups_reset(message: Message, settings: Settings, ups=None) -> None:
-    if message.chat.id != settings.admin_chat_id:
+    if not settings.is_admin(message.chat.id):
         return
     if ups is None:
         await message.answer(texts.UPS_NOT_CONFIGURED)
@@ -222,7 +227,7 @@ async def on_ups_reset(message: Message, settings: Settings, ups=None) -> None:
 async def on_other(message: Message, db: Database, settings: Settings) -> None:
     subscriber = await db.get_subscriber(message.chat.id)
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
-        admin = message.chat.id == settings.admin_chat_id
+        admin = settings.is_admin(message.chat.id)
         await message.answer(texts.unsupported_text(admin, settings.ups is not None), reply_markup=status_keyboard())
     elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
         await message.answer(texts.REQUEST_PENDING)

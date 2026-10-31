@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from enum import StrEnum
 
 from lxbot.storage.db import Database, Subscriber, SubscriberStatus
@@ -11,7 +12,9 @@ class StartOutcome(StrEnum):
     REJECTED = "rejected"
 
 
-async def start(db: Database, chat_id: int, name: str, username: str | None, admin_chat_id: int) -> StartOutcome:
+async def start(
+    db: Database, chat_id: int, name: str, username: str | None, admin_chat_ids: Collection[int]
+) -> StartOutcome:
     existing = await db.get_subscriber(chat_id)
     status = existing.status if existing else None
     if status is SubscriberStatus.APPROVED:
@@ -21,7 +24,7 @@ async def start(db: Database, chat_id: int, name: str, username: str | None, adm
     if status is SubscriberStatus.REJECTED:
         return StartOutcome.REJECTED
     # A user who left with /stop was approved before, so coming back needs no new approval.
-    if chat_id == admin_chat_id or status is SubscriberStatus.INACTIVE:
+    if chat_id in admin_chat_ids or status is SubscriberStatus.INACTIVE:
         await db.save_subscriber(chat_id, name, username, SubscriberStatus.APPROVED)
         return StartOutcome.SUBSCRIBED
     await db.save_subscriber(chat_id, name, username, SubscriberStatus.PENDING)

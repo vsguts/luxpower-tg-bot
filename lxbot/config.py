@@ -20,7 +20,8 @@ from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
 from lxbot.tuya.api import DEFAULT_API_URL as TUYA_DEFAULT_API_URL
 from lxbot.tuya.api import TuyaConfig
 
-_REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID", "DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
+_REQUIRED = ("BOT_TOKEN", "ADMIN_CHAT_ID")
+_DONGLE_REQUIRED = ("DONGLE_HOST", "DONGLE_SERIAL", "INVERTER_SERIAL")
 _ECOFLOW_REQUIRED = ("ECOFLOW_ACCESS_KEY", "ECOFLOW_SECRET_KEY", "ECOFLOW_SERIAL")
 _RETIRED_SCHEDULE_SETTINGS = ("DIGEST_TODAY_AT", "DIGEST_TOMORROW_AT", "SCHEDULE_PENDING_AT")
 
@@ -32,6 +33,14 @@ _TUYA_ID = re.compile(r"[A-Za-z0-9]+", re.ASCII)
 _MINUTES = re.compile(r"[0-9]+", re.ASCII)
 _MAX_REPEAT_MINUTES = 24 * 60
 
+LUXPOWER = "luxpower"
+ECOFLOW = "ecoflow"
+# EcoFlow does not publish its cloud rate limit: ask it half as often as the local dongle.
+_POLL_INTERVALS = {LUXPOWER: "15", ECOFLOW: "30"}
+_TRUE, _FALSE = frozenset({"1", "true", "yes"}), frozenset({"0", "false", "no"})
+
+DeviceConfig = DongleConfig | EcoFlowConfig
+
 
 class ConfigError(Exception):
     pass
@@ -40,8 +49,8 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
-    admin_chat_id: int
-    dongle: DongleConfig
+    admin_chat_ids: tuple[int, ...]
+    device: DeviceConfig
     thresholds: Thresholds
     poll_interval: float
     tz: ZoneInfo
@@ -49,6 +58,10 @@ class Settings:
     schedule: ScheduleConfig | None = None
     tuya: TuyaConfig | None = None
     ups: UpsConfig | None = None
+    has_generator: bool = True
+
+    def is_admin(self, chat_id: int) -> bool:
+        return chat_id in self.admin_chat_ids
 
 
 def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
@@ -59,7 +72,8 @@ def _require(env: Mapping[str, str], names: tuple[str, ...]) -> None:
 
 def _number(env: Mapping[str, str], name: str, default: str, convert: Callable[[str], T]) -> T:
     try:
-        return convert(env.get(name, default))
+        # An empty value, as left in a copied .env.example, means the default.
+        return convert(env.get(name, "").strip() or default)
     except ValueError as exc:
         raise ConfigError(f"{name} must be a number") from exc
 
@@ -83,6 +97,30 @@ def _serial(env: Mapping[str, str], name: str) -> str:
     if len(value) != SERIAL_LEN or not value.isascii():
         raise ConfigError(f"{name} must be {SERIAL_LEN} ASCII characters")
     return value
+
+
+def _admin_ids(env: Mapping[str, str]) -> tuple[int, ...]:
+    try:
+        ids = [int(part) for part in env["ADMIN_CHAT_ID"].split(",")]
+    except ValueError as exc:
+        raise ConfigError("ADMIN_CHAT_ID must be a Telegram user id, or several separated by commas") from exc
+    return tuple(dict.fromkeys(ids))
+
+
+def _flag(env: Mapping[str, str], name: str, default: bool) -> bool:
+    value = env.get(name, "").strip().lower()
+    if not value:
+        return default
+    if value in _TRUE | _FALSE:
+        return value in _TRUE
+    raise ConfigError(f"{name} must be true or false")
+
+
+def _device(env: Mapping[str, str]) -> str:
+    device = env.get("DEVICE", "").strip().lower() or LUXPOWER
+    if device not in _POLL_INTERVALS:
+        raise ConfigError(f"DEVICE must be {LUXPOWER} or {ECOFLOW}")
+    return device
 
 
 def _timezone(env: Mapping[str, str]) -> ZoneInfo:
@@ -210,7 +248,8 @@ def ecoflow_config_from_env(env: Mapping[str, str]) -> EcoFlowConfig:
 
 
 def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
-    _require(env, _REQUIRED)
+    device = _device(env)
+    _require(env, _REQUIRED + (_DONGLE_REQUIRED if device == LUXPOWER else _ECOFLOW_REQUIRED))
     thresholds = Thresholds(
         soc_low=_number(env, "SOC_LOW", "30", int),
         soc_critical=_number(env, "SOC_CRITICAL", "15", int),
@@ -221,13 +260,14 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         raise ConfigError("thresholds must satisfy SOC_CRITICAL < SOC_LOW < SOC_GEN_FULL")
     return Settings(
         bot_token=env["BOT_TOKEN"],
-        admin_chat_id=_number(env, "ADMIN_CHAT_ID", "", int),
-        dongle=dongle_config_from_env(env),
+        admin_chat_ids=_admin_ids(env),
+        device=dongle_config_from_env(env) if device == LUXPOWER else ecoflow_config_from_env(env),
         thresholds=thresholds,
-        poll_interval=_positive(env, "POLL_INTERVAL", "15"),
+        poll_interval=_positive(env, "POLL_INTERVAL", _POLL_INTERVALS[device]),
         tz=_timezone(env),
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),
         tuya=tuya_config_from_env(env),
         ups=ups_config_from_env(env, thresholds.battery),
+        has_generator=_flag(env, "HAS_GENERATOR", default=device == LUXPOWER),
     )

@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from lxbot.config import ConfigError, ecoflow_config_from_env, settings_from_env
+from lxbot.ecoflow.api import EcoFlowConfig
+from lxbot.luxpower.client import DongleConfig
 from lxbot.monitor.forecast import BatteryConfig
 from lxbot.schedule.service import DEFAULT_URL
 from tests.fixtures import DONGLE_SERIAL, INVERTER_SERIAL
@@ -19,9 +21,9 @@ ENV = {
 
 def test_defaults():
     settings = settings_from_env(ENV)
-    assert settings.admin_chat_id == 12345
-    assert settings.dongle.host == "inverter.lan"
-    assert settings.dongle.port == 8000
+    assert settings.admin_chat_ids == (12345,)
+    assert settings.device.host == "inverter.lan"
+    assert settings.device.port == 8000
     assert settings.poll_interval == 15
     assert (settings.thresholds.soc_low, settings.thresholds.soc_critical, settings.thresholds.soc_gen_full) == (30, 15, 90)
     assert settings.tz.key == "Europe/Kyiv"
@@ -31,7 +33,7 @@ def test_defaults():
 def test_overrides():
     env = ENV | {"DONGLE_PORT": "9000", "POLL_INTERVAL": "10", "SOC_LOW": "35", "TZ": "UTC", "DB_PATH": "/app/data/x.db"}
     settings = settings_from_env(env)
-    assert settings.dongle.port == 9000
+    assert settings.device.port == 9000
     assert settings.poll_interval == 10
     assert settings.thresholds.soc_low == 35
     assert settings.tz.key == "UTC"
@@ -309,3 +311,66 @@ def test_the_nut_threshold_follows_the_battery_reserve():
     assert settings_from_env(env).ups.low_soc == 11
     with pytest.raises(ConfigError, match="above the battery reserve"):
         settings_from_env(env | {"NUT_LOW_SOC": "10"})
+
+
+ECOFLOW_ENV = {
+    "BOT_TOKEN": "token",
+    "ADMIN_CHAT_ID": "12345",
+    "DEVICE": "ecoflow",
+    "ECOFLOW_ACCESS_KEY": "access",
+    "ECOFLOW_SECRET_KEY": "secret",
+    "ECOFLOW_SERIAL": "DCABZ0000000001",
+}
+
+
+def test_luxpower_is_the_default_device_with_a_generator():
+    settings = settings_from_env(ENV)
+    assert isinstance(settings.device, DongleConfig)
+    assert settings.has_generator
+
+
+def test_ecoflow_device_needs_no_dongle_and_has_no_generator():
+    settings = settings_from_env(ECOFLOW_ENV)
+    assert isinstance(settings.device, EcoFlowConfig)
+    assert settings.device.serial == "DCABZ0000000001"
+    assert not settings.has_generator
+    assert settings.poll_interval == 30
+
+
+def test_ecoflow_device_lists_its_own_missing_variables():
+    with pytest.raises(ConfigError, match="missing environment variables: ECOFLOW_SECRET_KEY$"):
+        settings_from_env({k: v for k, v in ECOFLOW_ENV.items() if k != "ECOFLOW_SECRET_KEY"})
+
+
+def test_device_is_case_insensitive_and_checked():
+    assert isinstance(settings_from_env(ECOFLOW_ENV | {"DEVICE": " EcoFlow "}).device, EcoFlowConfig)
+    with pytest.raises(ConfigError, match="DEVICE must be luxpower or ecoflow"):
+        settings_from_env(ENV | {"DEVICE": "victron"})
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("YES", True), ("1", True), ("false", False), ("no", False), ("0", False)])
+def test_has_generator_overrides_the_device_default(value, expected):
+    assert settings_from_env(ECOFLOW_ENV | {"HAS_GENERATOR": value}).has_generator is expected
+    assert settings_from_env(ENV | {"HAS_GENERATOR": value}).has_generator is expected
+
+
+def test_bad_has_generator():
+    with pytest.raises(ConfigError, match="HAS_GENERATOR must be true or false"):
+        settings_from_env(ENV | {"HAS_GENERATOR": "maybe"})
+
+
+def test_empty_poll_interval_means_the_device_default():
+    assert settings_from_env(ENV | {"POLL_INTERVAL": ""}).poll_interval == 15
+    assert settings_from_env(ECOFLOW_ENV | {"POLL_INTERVAL": " "}).poll_interval == 30
+
+
+def test_several_admins_are_separated_by_commas():
+    settings = settings_from_env(ENV | {"ADMIN_CHAT_ID": "12345, 67890,12345"})
+    assert settings.admin_chat_ids == (12345, 67890)
+    assert settings.is_admin(67890) and not settings.is_admin(1)
+
+
+@pytest.mark.parametrize("value", ["12345,,67890", "12345;67890", "@olya"])
+def test_bad_admin_list_is_named(value):
+    with pytest.raises(ConfigError, match="ADMIN_CHAT_ID"):
+        settings_from_env(ENV | {"ADMIN_CHAT_ID": value})
