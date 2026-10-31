@@ -286,3 +286,12 @@ async def test_the_admin_status_shows_a_running_ups_test(db):
     await on_status(other, db=db, settings=make_settings(ADMIN), poller=poller, ups=ups)
     assert texts.UPS_TEST_STATUS in admin.answer.await_args.args[0]
     assert texts.UPS_TEST_STATUS not in other.answer.await_args.args[0]
+
+
+async def test_approval_without_a_generator_does_not_promise_generator_alerts(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.PENDING)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=ADMIN), message=None, answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    settings = replace(make_settings(ADMIN), has_generator=False)
+    await on_decision(query, Decision(action="approve", chat_id=42), db=db, settings=settings, bot=bot)
+    assert bot.send_message.await_args.args == (42, texts.SUBSCRIBED_NO_GENERATOR)

@@ -16,6 +16,7 @@ REQUEST_SENT = "📨 Запит надіслано адміністратору.
 REQUEST_PENDING = "⏳ Запит ще розглядається."
 REQUEST_REJECTED = "🚫 Доступ не надано."
 SUBSCRIBED = "✅ Підписку підтверджено. Я повідомлятиму про світло, генератор і заряд батареї."
+SUBSCRIBED_NO_GENERATOR = "✅ Підписку підтверджено. Я повідомлятиму про світло і заряд батареї."
 ALREADY_SUBSCRIBED = "✅ Ви вже підписані."
 UNSUBSCRIBED = "👋 Підписку скасовано. Щоб повернутися, натисніть /start."
 NOT_SUBSCRIBED = "Натисніть /start, щоб надіслати запит на доступ."
@@ -206,7 +207,11 @@ def schedule_status_line(schedule: Schedule, now: datetime, tz: tzinfo) -> str:
     return _upcoming_line(upcoming, now, tz)
 
 
-def event_text(event: Event, tz: tzinfo) -> str | None:
+def subscribed_text(generator: bool) -> str:
+    return SUBSCRIBED if generator else SUBSCRIBED_NO_GENERATOR
+
+
+def event_text(event: Event, tz: tzinfo, *, generator: bool = True) -> str | None:
     clock = _clock(event.at, tz)
     match event.type:
         case EventType.GRID_LOST:
@@ -227,14 +232,12 @@ def event_text(event: Event, tz: tzinfo) -> str | None:
                 lines.append("⛽ Генератор можна вимикати")
             return _with_schedule("\n".join(lines), event, tz)
         case EventType.BATTERY_LOW:
-            lines = [f"🪫 <b>Залишилось {event.soc}%</b>", "⛽ Час заводити генератор", *forecast_lines(event.forecast)]
+            hint = ["⛽ Час заводити генератор"] if generator else []
+            lines = [f"🪫 <b>Залишилось {event.soc}%</b>", *hint, *forecast_lines(event.forecast)]
             return "\n".join(lines)
         case EventType.BATTERY_CRITICAL:
-            lines = [
-                f"🚨 <b>Залишилось {event.soc}%</b>",
-                "⛽ Терміново заведіть генератор",
-                *forecast_lines(event.forecast),
-            ]
+            hint = ["⛽ Терміново заведіть генератор"] if generator else []
+            lines = [f"🚨 <b>Залишилось {event.soc}%</b>", *hint, *forecast_lines(event.forecast)]
             return "\n".join(lines)
         case EventType.GEN_CHARGED:
             return f"🔋 <b>Заряджено {event.soc}%</b>\n⛽ Генератор можна вимикати"
@@ -296,6 +299,8 @@ def status_text(
     tz: tzinfo,
     schedule: Schedule | None = None,
     battery: BatteryConfig | None = None,
+    *,
+    generator: bool = True,
 ) -> str:
     schedule_line = schedule_status_line(schedule, now, tz) if schedule is not None else None
     if snapshot is None or state is None:
@@ -313,9 +318,10 @@ def status_text(
         flow = f" · розряджається {format_power(snapshot.battery_w)}"
     else:
         flow = ""
-    lines = [
-        f"⚡ Мережа: {grid}",
-        f"⛽ Генератор: {'працює' if state.gen.value else 'не працює'}",
+    lines = [f"⚡ Мережа: {grid}"]
+    if generator:
+        lines.append(f"⛽ Генератор: {'працює' if state.gen.value else 'не працює'}")
+    lines += [
         f"🔋 Батарея: {snapshot.soc}%{flow}",
         *forecast_lines(_status_forecast(snapshot, state, battery), trend_pending=True),
         f"🏠 Споживання: {format_power(snapshot.load_w)}",

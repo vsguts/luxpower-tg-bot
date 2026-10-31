@@ -151,9 +151,13 @@ docker compose start bot
 Check: SOC, battery voltage, battery charge/discharge, load, PV, grid voltage, generator voltage,
 `grid_present`, `gen_running`. Fix `lxbot/luxpower/registers.py` if anything disagrees.
 
-## EcoFlow Delta Pro (in progress)
+## EcoFlow Delta Pro
 
-EcoFlow support reads the station through the EcoFlow cloud. Credentials come from the
+With `DEVICE=ecoflow` the bot reads an EcoFlow Delta Pro through the EcoFlow cloud instead of a LuxPower
+dongle. The grid is the station's AC input (above 180 V and 45 Hz); a generator on that input reads as the
+grid being back, so `HAS_GENERATOR` defaults to `false` and the generator lines and hints are gone. Every poll
+also checks that the station is online: the cloud answers an offline station with its last values, which
+would hide a blackout, so an offline station counts as a lost connection instead. Credentials come from the
 [EcoFlow developer portal](https://developer-eu.ecoflow.com): sign in with the account the station is
 bound to, apply for developer access, then create an Access Key / Secret Key pair. The serial number
 is in the EcoFlow app under the device's settings. Put them into `.env`:
@@ -168,8 +172,8 @@ ECOFLOW_API_URL=https://api-e.ecoflow.com
 
 The Secret Key controls the station, not just reads it: keep it out of chats and repositories.
 
-Capture what the cloud reports, in the same three situations: grid on, grid off, solar charging.
-The device state goes to the terminal; the file holds only the quota JSON:
+To check the field mapping (`lxbot/ecoflow/quota.py`), dump what the cloud reports, for example with the grid
+off or while solar charges. The device state goes to the terminal; the file holds only the quota JSON:
 
 ```bash
 docker compose run --rm -T bot python -m tools.dump_ecoflow > delta-pro-grid-on.json

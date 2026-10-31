@@ -91,7 +91,7 @@ async def on_start(message: Message, db: Database, settings: Settings, bot: Bot)
     outcome = await subscriptions.start(db, chat_id, user.full_name, user.username, settings.admin_chat_id)
     match outcome:
         case StartOutcome.SUBSCRIBED:
-            await message.answer(texts.SUBSCRIBED, reply_markup=status_keyboard())
+            await message.answer(texts.subscribed_text(settings.has_generator), reply_markup=status_keyboard())
         case StartOutcome.ALREADY:
             await message.answer(texts.ALREADY_SUBSCRIBED, reply_markup=status_keyboard())
         case StartOutcome.PENDING:
@@ -119,7 +119,8 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
         return
     with contextlib.suppress(TelegramForbiddenError):
         if approve:
-            await bot.send_message(subscriber.chat_id, texts.SUBSCRIBED, reply_markup=status_keyboard())
+            text = texts.subscribed_text(settings.has_generator)
+            await bot.send_message(subscriber.chat_id, text, reply_markup=status_keyboard())
         else:
             await bot.send_message(subscriber.chat_id, texts.REQUEST_REJECTED)
     # Telegram hands over an inaccessible message for requests older than ~48 h; the decision is already stored.
@@ -139,7 +140,9 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
     battery = settings.thresholds.battery
-    text = texts.status_text(poller.latest, poller.state, now, settings.tz, schedule, battery)
+    text = texts.status_text(
+        poller.latest, poller.state, now, settings.tz, schedule, battery, generator=settings.has_generator
+    )
     if ups is not None and ups.test_low and message.chat.id == settings.admin_chat_id:
         text += f"\n{texts.UPS_TEST_STATUS}"
     await message.answer(text)

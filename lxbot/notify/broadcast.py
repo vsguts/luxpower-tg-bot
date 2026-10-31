@@ -26,18 +26,28 @@ class Sender(Protocol):
 
 
 class Notifier:
-    def __init__(self, sender: Sender, db: Database, admin_chat_id: int, tz: tzinfo, *, retry_base: float = 1.0):
+    def __init__(
+        self,
+        sender: Sender,
+        db: Database,
+        admin_chat_id: int,
+        tz: tzinfo,
+        *,
+        generator: bool = True,
+        retry_base: float = 1.0,
+    ):
         self._sender = sender
         self._db = db
         self._admin_chat_id = admin_chat_id
         self._tz = tz
+        self._generator = generator
         self._retry_base = retry_base
         self._queue: asyncio.Queue[tuple[int, str, bool]] = asyncio.Queue()
 
     async def publish(self, events: Sequence[Event]) -> None:
         for event in events:
             await self._db.add_event(event.type, event.at, event.to_payload())
-            text = event_text(event, self._tz)
+            text = event_text(event, self._tz, generator=self._generator)
             if text is None:
                 continue
             for chat_id in await self._recipients(event.audience):

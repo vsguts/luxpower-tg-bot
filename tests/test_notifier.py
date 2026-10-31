@@ -99,3 +99,10 @@ async def test_silent_events_are_sent_without_a_sound(db, subscribers):
     events = [Event(EventType.BATTERY_LOW, at(0), 30), Event(EventType.BATTERY_LOW, at(1), 29, silent=True)]
     await deliver(make_notifier(RecordingSender(), db), events)
     assert calls == [False, False, True, True]
+
+
+async def test_without_a_generator_alerts_do_not_mention_one(db, subscribers):
+    sender = FakeSender()
+    notifier = Notifier(sender, db, ADMIN, ZoneInfo("Europe/Kyiv"), generator=False, retry_base=0)
+    await deliver(notifier, [Event(EventType.BATTERY_CRITICAL, at(0), 15)])
+    assert sender.sent and all("генератор" not in text.lower() for _, text in sender.sent)

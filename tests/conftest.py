@@ -21,7 +21,7 @@ def make_settings(admin_chat_id: int = 1) -> Settings:
     return Settings(
         bot_token="test-token",
         admin_chat_id=admin_chat_id,
-        dongle=DongleConfig("127.0.0.1", 8000, DONGLE_SERIAL, INVERTER_SERIAL),
+        device=DongleConfig("127.0.0.1", 8000, DONGLE_SERIAL, INVERTER_SERIAL),
         thresholds=Thresholds(),
         poll_interval=15,
         tz=ZoneInfo("Europe/Kyiv"),

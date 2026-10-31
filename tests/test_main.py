@@ -6,11 +6,16 @@ from zoneinfo import ZoneInfo
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.methods import GetMe
 
-from lxbot.main import COMMANDS, poll_telegram, stop_background, stop_when_ended, wait_for_telegram
+from lxbot.ecoflow.api import EcoFlowConfig
+from lxbot.ecoflow.client import EcoFlowClient
+from lxbot.luxpower.client import DongleClient, DongleConfig
+from lxbot.main import bot_commands, device_client, poll_telegram, stop_background, stop_when_ended, wait_for_telegram
 from lxbot.monitor.detector import Event, EventType
 from lxbot.notify.broadcast import Notifier
 from lxbot.storage.db import SubscriberStatus
 from tests.factories import at
+
+COMMANDS = bot_commands(generator=True)
 
 METHOD = GetMe()
 
@@ -33,14 +38,14 @@ def network_error():
 async def test_wait_for_telegram_retries_network_errors():
     set_my_commands = FlakyCall([network_error(), network_error()])
     bot = SimpleNamespace(set_my_commands=set_my_commands)
-    await wait_for_telegram(bot, retry_delay=0)
+    await wait_for_telegram(bot, COMMANDS, retry_delay=0)
     assert set_my_commands.calls == [(COMMANDS,)] * 3
 
 
 async def test_wait_for_telegram_retries_server_errors():
     set_my_commands = FlakyCall([TelegramServerError(METHOD, "Bad Gateway")])
     bot = SimpleNamespace(set_my_commands=set_my_commands)
-    await wait_for_telegram(bot, retry_delay=0)
+    await wait_for_telegram(bot, COMMANDS, retry_delay=0)
     assert len(set_my_commands.calls) == 2
 
 
@@ -164,3 +169,15 @@ def test_grid_out_means_out_and_not_coming_back():
     assert not grid_out(State(grid=Debounced(False, at(0), pending_since=at(1), pending_count=1), gen=gen))
     assert not grid_out(State(grid=Debounced(True, at(0)), gen=gen))
     assert not grid_out(None)
+
+
+def test_status_command_mentions_the_generator_only_when_there_is_one():
+    assert "генератора" in bot_commands(generator=True)[1].description
+    assert "генератора" not in bot_commands(generator=False)[1].description
+
+
+def test_device_client_follows_the_device_config():
+    dongle = device_client(DongleConfig("127.0.0.1", 8000, "DG00000001", "0000000001"))
+    ecoflow = device_client(EcoFlowConfig("access", "secret", "DCABZ0000000001"))
+    assert isinstance(dongle, DongleClient)
+    assert isinstance(ecoflow, EcoFlowClient)
