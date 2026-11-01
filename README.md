@@ -24,7 +24,7 @@ house runs on it (no grid, no generator), down to `BATTERY_RESERVE_SOC` (default
 
 - **by power:** remaining energy ÷ current discharge power, like a charging station shows it;
 - **by trend:** the charge lost since this battery-only stretch began ÷ the time it took (shown after 30
-  minutes and a 2 % drop).
+  minutes and a 2 % drop). It needs no power reading, so it shows even when the device reports none.
 
 Both are rounded to 10 minutes. They appear in `/status`, in "Світло зникло" (by power only, since there
 is no trend yet) and in the 30 % / 15 % alerts.
@@ -158,7 +158,9 @@ With `DEVICE=ecoflow` the bot reads an EcoFlow Delta Pro through the EcoFlow clo
 dongle. The grid is the station's AC input (above 180 V and 45 Hz); a generator on that input reads as the
 grid being back, so `HAS_GENERATOR` defaults to `false` and the generator lines and hints are gone. Every poll
 also checks that the station is online: the cloud answers an offline station with its last values, which
-would hide a blackout, so an offline station counts as a lost connection instead. Credentials come from the
+would hide a blackout, so an offline station counts as a lost connection instead. The battery power is the
+BMS current × voltage: the cloud leaves the station's battery watts at 0 even while it runs the house.
+Credentials come from the
 [EcoFlow developer portal](https://developer-eu.ecoflow.com): sign in with the account the station is
 bound to, apply for developer access, then create an Access Key / Secret Key pair. The serial number
 is in the EcoFlow app under the device's settings. Put them into `.env`:

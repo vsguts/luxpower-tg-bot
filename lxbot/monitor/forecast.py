@@ -78,15 +78,19 @@ def forecast_for(
     drain_since: datetime | None,
     battery: BatteryConfig | None,
 ) -> Forecast | None:
-    power_w = -snapshot.battery_w
-    if battery is None or not on_battery or power_w <= 0:
+    if battery is None or not on_battery:
         return None
+    power_w = max(-snapshot.battery_w, 0)
+    power_estimate = by_power(snapshot.soc, power_w, battery)
+    # The trend needs only the charge dropping off the grid, so it stands even when the watts read nothing.
     trend = None
     if drain_soc is not None and drain_since is not None:
         trend = by_trend(drain_soc, drain_since, snapshot.soc, snapshot.taken_at, battery)
+    if power_estimate is None and trend is None:
+        return None
     return Forecast(
         power_w=power_w,
-        by_power=by_power(snapshot.soc, power_w, battery),
+        by_power=power_estimate,
         by_trend=trend,
         trend_drop=drain_soc - snapshot.soc if trend is not None else None,
         trend_elapsed=snapshot.taken_at - drain_since if trend is not None else None,
