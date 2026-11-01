@@ -7,7 +7,10 @@ from lxbot.device.snapshot import Snapshot
 from lxbot.ecoflow.quota import InvalidQuota, decode_quota
 from tests.factories import BASE
 
-GRID_ON = json.loads((Path(__file__).parent / "fixtures" / "ecoflow-delta-pro-grid-on.json").read_text())
+FIXTURES = Path(__file__).parent / "fixtures"
+GRID_ON = json.loads((FIXTURES / "ecoflow-delta-pro-grid-on.json").read_text())
+# Taken during a real outage: the BMS watts read 0 while the battery gives about 118 W.
+GRID_OFF = json.loads((FIXTURES / "ecoflow-delta-pro-grid-off.json").read_text())
 
 
 def _quota(**overrides: object) -> dict[str, object]:
@@ -21,14 +24,22 @@ def test_decode_the_grid_on_sample():
     assert decode_quota(GRID_ON, BASE).grid_present
 
 
-def test_grid_off_reads_no_ac_input():
-    snapshot = decode_quota(_quota(inv__acInVol=0, inv__acInFreq=0), BASE)
-    assert not snapshot.grid_present
+def test_decode_the_grid_off_sample():
+    assert decode_quota(GRID_OFF, BASE) == Snapshot(
+        taken_at=BASE, soc=98, battery_w=-118, pv_w=0, load_w=50, grid_v=0.0, grid_hz=0, gen_running=False
+    )
+    assert not decode_quota(GRID_OFF, BASE).grid_present
 
 
-def test_discharge_is_negative_and_charge_positive():
-    assert decode_quota(_quota(bmsMaster__inputWatts=0, bmsMaster__outputWatts=502), BASE).battery_w == -502
-    assert decode_quota(_quota(bmsMaster__inputWatts=1200, bmsMaster__outputWatts=0), BASE).battery_w == 1200
+def test_battery_power_comes_from_current_and_voltage():
+    # mA × mV: 10 A at 50 V charges with 500 W, -2.4 A discharges with 120 W.
+    assert decode_quota(_quota(bmsMaster__amp=10_000, bmsMaster__vol=50_000), BASE).battery_w == 500
+    assert decode_quota(_quota(bmsMaster__amp=-2_400, bmsMaster__vol=50_000), BASE).battery_w == -120
+
+
+@pytest.mark.parametrize("milliamps", [-135, 135, -180])
+def test_the_bms_idle_current_is_no_flow(milliamps):
+    assert decode_quota(_quota(bmsMaster__amp=milliamps, bmsMaster__vol=50_122), BASE).battery_w == 0
 
 
 def test_load_and_solar():
@@ -52,3 +63,7 @@ def test_non_number_is_invalid(value):
 def test_soc_above_100_is_invalid():
     with pytest.raises(InvalidQuota, match="SOC"):
         decode_quota(_quota(pd__soc=101), BASE)
+
+
+def test_a_flow_of_ten_watts_is_reported():
+    assert decode_quota(_quota(bmsMaster__amp=-200, bmsMaster__vol=50_000), BASE).battery_w == -10

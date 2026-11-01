@@ -90,3 +90,13 @@ def test_payload():
         "trend_elapsed_s": 7200,
     }
     assert Forecast(500, None).to_payload()["by_power_s"] is None
+
+
+@pytest.mark.parametrize("battery_w", [0, 300])
+def test_the_trend_needs_only_the_battery_running_the_house_not_its_watts(battery_w):
+    # An EcoFlow station can report no battery watts at all while the house runs on it.
+    snapshot = make_snapshot(480, grid=False, soc=60, battery_w=battery_w)
+    forecast = forecast_for(snapshot, on_battery=True, drain_soc=72, drain_since=at(0), battery=BATTERY)
+    assert forecast == Forecast(
+        power_w=0, by_power=None, by_trend=timedelta(hours=9, minutes=10), trend_drop=12, trend_elapsed=timedelta(hours=2)
+    )

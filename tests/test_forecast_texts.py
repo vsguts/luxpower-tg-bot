@@ -100,3 +100,11 @@ def test_a_runtime_beyond_two_days_is_capped():
     event = Event(EventType.GRID_LOST, at(0), 95, previous_duration=timedelta(hours=1),
                   forecast=Forecast(60, timedelta(days=8, hours=21)))
     assert lines(event)[3] == "⏳ Вистачить: понад 2 дн при 60 Вт"
+
+
+def test_status_shows_the_trend_alone_when_the_battery_watts_read_nothing():
+    snapshot = make_snapshot(480, grid=False, soc=60, battery_w=0)
+    state = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)), drain_soc=72, drain_since=at(0))
+    status = texts.status_text(snapshot, state, at(480), KYIV, battery=BATTERY)
+    assert "📉 За темпом розряду:" in status
+    assert "Вистачить" not in status

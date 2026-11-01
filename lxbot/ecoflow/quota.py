@@ -1,7 +1,8 @@
 """EcoFlow Delta Pro quota fields, as the cloud reports them, mapped onto the shared Snapshot.
 
-Units come from a real Delta Pro dump (tools/dump_ecoflow.py): AC input voltage in mV, frequency in whole Hz,
-powers in W. Solar power is unconfirmed until a dump taken while the panels deliver.
+Units come from real Delta Pro dumps (tools/dump_ecoflow.py): AC input voltage in mV, frequency in whole Hz,
+battery current in mA and voltage in mV, powers in W. Solar power is unconfirmed until a dump taken while
+the panels deliver.
 """
 
 from collections.abc import Mapping
@@ -12,10 +13,12 @@ from lxbot.device.snapshot import Snapshot
 SOC = "pd.soc"
 AC_IN_MILLIVOLTS = "inv.acInVol"
 AC_IN_HZ = "inv.acInFreq"
-BATTERY_IN_W = "bmsMaster.inputWatts"
-BATTERY_OUT_W = "bmsMaster.outputWatts"
+BATTERY_MILLIAMPS = "bmsMaster.amp"
+BATTERY_MILLIVOLTS = "bmsMaster.vol"
 SOLAR_W = "mppt.inWatts"
 OUTPUT_W = "pd.wattsOutSum"
+# At rest on the grid the BMS reads about -135 mA (7 W): its own draw, not a flow worth reporting.
+BMS_IDLE_W = 10
 
 
 class InvalidQuota(ValueError):
@@ -29,6 +32,12 @@ def _number(quota: Mapping[str, object], key: str) -> int | float:
     return value
 
 
+# The cloud leaves bmsMaster.inputWatts/outputWatts at 0 even while the battery runs the house.
+def _battery_w(quota: Mapping[str, object]) -> int:
+    watts = round(_number(quota, BATTERY_MILLIAMPS) * _number(quota, BATTERY_MILLIVOLTS) / 1_000_000)
+    return 0 if abs(watts) < BMS_IDLE_W else watts
+
+
 def decode_quota(quota: Mapping[str, object], taken_at: datetime) -> Snapshot:
     soc = int(_number(quota, SOC))
     if not 0 <= soc <= 100:
@@ -36,7 +45,7 @@ def decode_quota(quota: Mapping[str, object], taken_at: datetime) -> Snapshot:
     return Snapshot(
         taken_at=taken_at,
         soc=soc,
-        battery_w=int(_number(quota, BATTERY_IN_W) - _number(quota, BATTERY_OUT_W)),
+        battery_w=_battery_w(quota),
         pv_w=int(_number(quota, SOLAR_W)),
         load_w=int(_number(quota, OUTPUT_W)),
         grid_v=_number(quota, AC_IN_MILLIVOLTS) / 1000,
