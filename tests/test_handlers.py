@@ -161,7 +161,7 @@ async def test_status_shows_the_next_planned_outage(db):
     start = datetime.now(UTC) + timedelta(hours=2)
     day = start.astimezone(KYIV).date()
     schedule = Schedule(GROUP, {day: DaySchedule(GROUP, day, (Outage(start, start + timedelta(hours=4)),))})
-    schedules = SimpleNamespace(current=lambda now: schedule)
+    schedules = SimpleNamespace(current=lambda now: schedule, config=SimpleNamespace(match_window=timedelta(minutes=30)))
     msg = message(42)
     await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
     assert "📅 Наступне відключення:" in msg.answer.await_args.args[0]
