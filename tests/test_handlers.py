@@ -16,6 +16,7 @@ from lxbot.bot.handlers import (
     on_decision,
     on_other,
     on_remove,
+    on_schedule,
     on_start,
     on_status,
     on_stop,
@@ -24,6 +25,7 @@ from lxbot.bot.handlers import (
     on_ups_test,
     on_ups_test_answer,
     router,
+    status_keyboard,
 )
 from lxbot.monitor.detector import Debounced, State, initial_state
 from lxbot.monitor.forecast import BatteryConfig
@@ -143,6 +145,7 @@ def test_router_registers_every_handler():
     message_callbacks = [h.callback for h in router.message.handlers]
     query_callbacks = [h.callback for h in router.callback_query.handlers]
     assert message_callbacks.count(on_status) == 2
+    assert message_callbacks.count(on_schedule) == 2
     for callback in (on_start, on_stop, on_subscribers):
         assert callback in message_callbacks
     # The catch-all must come last, or it would answer every command.
@@ -326,3 +329,47 @@ async def test_admins_are_not_offered_for_removal(db):
     await on_subscribers(msg, db=db, settings=two_admins())
     rows = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
     assert len(rows) == 1
+
+
+def test_the_keyboard_has_the_schedule_button_only_with_a_schedule():
+    def labels(keyboard):
+        return [button.text for row in keyboard.keyboard for button in row]
+
+    assert labels(status_keyboard()) == [texts.STATUS_BUTTON]
+    assert labels(status_keyboard(schedule=True)) == [texts.STATUS_BUTTON, texts.SCHEDULE_BUTTON]
+
+
+async def test_the_schedule_on_request(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    day = DaySchedule(GROUP, datetime.now(KYIV).date())
+    schedule = Schedule(GROUP, {day.day: day})
+    schedules = SimpleNamespace(current=lambda now: schedule, outdated_since=lambda now: None)
+    msg = message(42)
+    await on_schedule(msg, db=db, settings=make_settings(ADMIN), schedules=schedules)
+    text = msg.answer.await_args.args[0]
+    assert text.startswith("📅 <b>Графік відключень</b> · черга 3.2")
+    assert "✅ Відключень не заплановано" in text
+
+
+async def test_the_schedule_requires_approval(db):
+    msg = message(42)
+    await on_schedule(msg, db=db, settings=make_settings(ADMIN), schedules=SimpleNamespace())
+    assert msg.answer.await_args.args == (texts.NOT_SUBSCRIBED,)
+
+
+async def test_the_schedule_when_it_is_not_configured(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    msg = message(42)
+    await on_schedule(msg, db=db, settings=make_settings(ADMIN), schedules=None)
+    assert msg.answer.await_args.args == (texts.SCHEDULE_NOT_CONFIGURED,)
+
+
+async def test_status_refreshes_the_keyboard(db):
+    await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
+    snapshot = make_snapshot(0, soc=80)
+    poller = SimpleNamespace(latest=snapshot, state=initial_state(snapshot))
+    schedules = SimpleNamespace(current=lambda now: None, config=SimpleNamespace(match_window=timedelta(minutes=30)))
+    msg = message(42)
+    await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
+    keyboard = msg.answer.await_args.kwargs["reply_markup"]
+    assert [b.text for row in keyboard.keyboard for b in row] == [texts.STATUS_BUTTON, texts.SCHEDULE_BUTTON]

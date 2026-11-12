@@ -334,3 +334,55 @@ def test_status_text_says_when_the_light_was_due():
     lines = texts.status_text(snapshot, state, local(2026, 10, 15, 16), KYIV, SCHEDULE).splitlines()
     due = lines.index("⚠️ За графіком світло мало бути з 15:00")
     assert lines[due + 1] == "📅 Можливе відключення: сьогодні з 18:00 до 19:00"
+
+
+def plain(text):
+    return text.replace("<b>", "").replace("</b>", "").replace("<s>", "").replace("</s>", "")
+
+
+def test_the_schedule_on_request_lists_every_day_from_today():
+    tomorrow = DaySchedule(GROUP, TOMORROW)
+    schedule = replace(SCHEDULE, days={TODAY: TODAY_SCHEDULE, TOMORROW: tomorrow},
+                       dtek_updated=local(2026, 10, 14, 22, 42))
+    text = texts.schedule_text(schedule, local(2026, 10, 15, 16), KYIV)
+    assert plain(text).splitlines() == [
+        "📅 Графік відключень · черга 3.2",
+        "",
+        "Сьогодні, четвер, 15 жовтня",
+        "🕐 з 11:00 до 15:00 (~4 год)",
+        "❔ можливо з 18:00 до 19:00",
+        "🕐 з 20:30 до 24:00 (~3.5 год)",
+        "Без світла: 7 год 30 хв · ще попереду 3 год 30 хв",
+        "",
+        "Завтра, пʼятниця, 16 жовтня",
+        "✅ Відключень не заплановано",
+        "",
+        "🕐 ДТЕК оновив графік 14.10 22:42",
+    ]
+    assert "<s>з 11:00 до 15:00 (~4 год)</s>" in text
+
+
+def test_the_schedule_on_request_skips_past_days():
+    yesterday = DaySchedule(GROUP, date(2026, 10, 14), (Outage(local(2026, 10, 14, 8), local(2026, 10, 14, 12)),))
+    schedule = Schedule(GROUP, {yesterday.day: yesterday, TODAY: TODAY_SCHEDULE})
+    lines = plain(texts.schedule_text(schedule, local(2026, 10, 15, 9), KYIV)).splitlines()
+    assert "Сьогодні, четвер, 15 жовтня" in lines
+    assert not any("14 жовтня" in line for line in lines)
+
+
+def test_the_schedule_on_request_in_a_quiet_period():
+    schedule = Schedule(GROUP, {})
+    assert plain(texts.schedule_text(schedule, local(2026, 7, 1, 12), KYIV)).splitlines() == [
+        "📅 Графік відключень · черга 3.2",
+        "",
+        "✅ Відключень за графіком не заплановано",
+    ]
+
+
+def test_the_schedule_on_request_from_old_data_says_so():
+    text = texts.schedule_text(SCHEDULE, local(2026, 10, 15, 16), KYIV, outdated_since=local(2026, 10, 15, 7, 5))
+    assert text.splitlines()[-1] == "⚠️ Дані могли застаріти: джерело оновлювалось 15.10 07:05"
+
+
+def test_no_schedule_to_show():
+    assert texts.schedule_text(None, local(2026, 10, 15, 16), KYIV) == texts.SCHEDULE_UNAVAILABLE

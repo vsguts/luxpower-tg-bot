@@ -262,7 +262,7 @@ class ScheduleService:
             self._posted[current.day] = fingerprint(current)
             self._diverged.pop(current.day, None)
         update = ScheduleUpdate(tuple(shown), tuple(published), tuple(changed))
-        return [Event(EventType.SCHEDULE_UPDATE, now, update=update, source_updated=self._outdated_since(now))]
+        return [Event(EventType.SCHEDULE_UPDATE, now, update=update, source_updated=self.outdated_since(now))]
 
     def _forget_before(self, today: date) -> None:
         for days in (self._posted, self._versions, self._diverged):
@@ -281,7 +281,9 @@ class ScheduleService:
         return now - self._versions[day][1] >= hold or now - churn_since >= SETTLE_MAX
 
     # Updates still go out from data the source stopped refreshing, saying how old it is.
-    def _outdated_since(self, now: datetime) -> datetime | None:
+    def outdated_since(self, now: datetime) -> datetime | None:
+        if self._schedule is None:
+            return None
         updated = self._schedule.source_updated or self._fetched_at
         return updated if now - updated > SOURCE_MAX_AGE else None
 
