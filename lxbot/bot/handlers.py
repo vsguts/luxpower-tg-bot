@@ -52,8 +52,15 @@ class UpsTest(CallbackData, prefix="ups"):
     confirm: bool
 
 
-def status_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=texts.STATUS_BUTTON)]], resize_keyboard=True)
+def status_keyboard(schedule: bool = False) -> ReplyKeyboardMarkup:
+    buttons = [KeyboardButton(text=texts.STATUS_BUTTON)]
+    if schedule:
+        buttons.append(KeyboardButton(text=texts.SCHEDULE_BUTTON))
+    return ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
+
+
+def _keyboard(settings: Settings) -> ReplyKeyboardMarkup:
+    return status_keyboard(settings.schedule is not None)
 
 
 def approval_keyboard(chat_id: int) -> InlineKeyboardMarkup:
@@ -91,9 +98,9 @@ async def on_start(message: Message, db: Database, settings: Settings, bot: Bot)
     outcome = await subscriptions.start(db, chat_id, user.full_name, user.username, settings.admin_chat_ids)
     match outcome:
         case StartOutcome.SUBSCRIBED:
-            await message.answer(texts.subscribed_text(settings.has_generator), reply_markup=status_keyboard())
+            await message.answer(texts.subscribed_text(settings.has_generator), reply_markup=_keyboard(settings))
         case StartOutcome.ALREADY:
-            await message.answer(texts.ALREADY_SUBSCRIBED, reply_markup=status_keyboard())
+            await message.answer(texts.ALREADY_SUBSCRIBED, reply_markup=_keyboard(settings))
         case StartOutcome.PENDING:
             await message.answer(texts.REQUEST_PENDING)
         case StartOutcome.REJECTED:
@@ -122,7 +129,7 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
     with contextlib.suppress(TelegramForbiddenError):
         if approve:
             text = texts.subscribed_text(settings.has_generator)
-            await bot.send_message(subscriber.chat_id, text, reply_markup=status_keyboard())
+            await bot.send_message(subscriber.chat_id, text, reply_markup=_keyboard(settings))
         else:
             await bot.send_message(subscriber.chat_id, texts.REQUEST_REJECTED)
     # Telegram hands over an inaccessible message for requests older than ~48 h; the decision is already stored.
@@ -155,7 +162,22 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     )
     if ups is not None and ups.test_low and settings.is_admin(message.chat.id):
         text += f"\n{texts.UPS_TEST_STATUS}"
-    await message.answer(text)
+    # Keyboards are kept per chat: answering with the current one brings new buttons to old subscribers.
+    await message.answer(text, reply_markup=status_keyboard(schedules is not None))
+
+
+@router.message(Command("schedule"))
+@router.message(F.text == texts.SCHEDULE_BUTTON)
+async def on_schedule(message: Message, db: Database, settings: Settings, schedules=None) -> None:
+    if not await subscriptions.is_approved(db, message.chat.id):
+        await message.answer(texts.NOT_SUBSCRIBED)
+        return
+    if schedules is None:
+        await message.answer(texts.SCHEDULE_NOT_CONFIGURED)
+        return
+    now = datetime.now(UTC)
+    text = texts.schedule_text(schedules.current(now), now, settings.tz, schedules.outdated_since(now))
+    await message.answer(text, reply_markup=status_keyboard(schedule=True))
 
 
 @router.message(Command("stop"))
@@ -236,7 +258,9 @@ async def on_other(message: Message, db: Database, settings: Settings) -> None:
     subscriber = await db.get_subscriber(message.chat.id)
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
         admin = settings.is_admin(message.chat.id)
-        await message.answer(texts.unsupported_text(admin, settings.ups is not None), reply_markup=status_keyboard())
+        schedule = settings.schedule is not None
+        text = texts.unsupported_text(admin, settings.ups is not None, schedule)
+        await message.answer(text, reply_markup=status_keyboard(schedule))
     elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
         await message.answer(texts.REQUEST_PENDING)
     else:

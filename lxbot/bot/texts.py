@@ -14,6 +14,9 @@ DEFAULT_MATCH_WINDOW = timedelta(minutes=30)
 ON_TIME = timedelta(minutes=2)
 
 STATUS_BUTTON = "📊 Статус"
+SCHEDULE_BUTTON = "📅 Графік"
+SCHEDULE_UNAVAILABLE = "⏳ Графік зараз недоступний: джерело давно не оновлювалось."
+SCHEDULE_NOT_CONFIGURED = "Графік відключень не налаштовано."
 REQUEST_SENT = "📨 Запит надіслано адміністратору. Я напишу, щойно його схвалять."
 REQUEST_PENDING = "⏳ Запит ще розглядається."
 REQUEST_REJECTED = "🚫 Доступ не надано."
@@ -22,7 +25,7 @@ SUBSCRIBED_NO_GENERATOR = "✅ Підписку підтверджено. Я п�
 ALREADY_SUBSCRIBED = "✅ Ви вже підписані."
 UNSUBSCRIBED = "👋 Підписку скасовано. Щоб повернутися, натисніть /start."
 NOT_SUBSCRIBED = "Натисніть /start, щоб надіслати запит на доступ."
-UNSUPPORTED = "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
+UNSUPPORTED = "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status)"
 TREND_PENDING = "📉 За темпом розряду: ще мало даних"
 NO_DATA = "⏳ Ще немає даних від пристрою."
 NO_SUBSCRIBERS = "Підписників немає."
@@ -150,6 +153,27 @@ def schedule_update_text(
         lines += ["", _day_heading(schedule.day, today), *_outage_lines(schedule, tz, now)]
     if outdated_since is not None:
         lines += ["", f"⚠️ Дані могли застаріти: джерело оновлювалось {outdated_since.astimezone(tz):%d.%m %H:%M}"]
+    return "\n".join(lines)
+
+
+def schedule_text(
+    schedule: Schedule | None, now: datetime, tz: tzinfo, outdated_since: datetime | None = None
+) -> str:
+    if schedule is None:
+        return SCHEDULE_UNAVAILABLE
+    today = now.astimezone(tz).date()
+    lines = [f"📅 <b>Графік відключень</b> · черга {schedule.group.removeprefix('GPV')}"]
+    days = [day_schedule for day, day_schedule in sorted(schedule.days.items()) if day >= today]
+    if not days:
+        lines += ["", "✅ Відключень за графіком не заплановано"]
+    for day_schedule in days:
+        lines += ["", _day_heading(day_schedule.day, today), *_outage_lines(day_schedule, tz, now)]
+    if schedule.dtek_updated is not None:
+        lines += ["", f"🕐 ДТЕК оновив графік {schedule.dtek_updated.astimezone(tz):%d.%m %H:%M}"]
+    if outdated_since is not None:
+        if schedule.dtek_updated is None:
+            lines.append("")
+        lines.append(f"⚠️ Дані могли застаріти: джерело оновлювалось {outdated_since.astimezone(tz):%d.%m %H:%M}")
     return "\n".join(lines)
 
 
@@ -302,10 +326,11 @@ def forecast_lines(forecast: Forecast | None, *, trend_pending: bool = False) ->
     return lines
 
 
-def unsupported_text(admin: bool, ups: bool = False) -> str:
+def unsupported_text(admin: bool, ups: bool = False, schedule: bool = False) -> str:
+    text = UNSUPPORTED + (", 📅 Графік (/schedule)" if schedule else "") + ", /stop"
     if not admin:
-        return UNSUPPORTED
-    return UNSUPPORTED + ", /subscribers" + (", /ups_test, /ups_reset" if ups else "")
+        return text
+    return text + ", /subscribers" + (", /ups_test, /ups_reset" if ups else "")
 
 
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:

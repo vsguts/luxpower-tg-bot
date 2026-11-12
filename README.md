@@ -12,6 +12,7 @@ Design: `docs/superpowers/specs/2026-10-15-luxpower-tg-bot-design.md`.
 |---------|-----|------|
 | `/start` | anyone | ask for access; the admin gets ✅ / ❌ buttons |
 | `/status`, 📊 Статус | subscribers | grid, generator, battery, load, PV |
+| `/schedule`, 📅 Графік | subscribers | the current outage schedule, every known day from today (with `SCHEDULE_GROUP`) |
 | `/stop` | subscribers | unsubscribe (`/start` brings you back without approval) |
 | `/subscribers` | admin | list subscribers; remove, approve, reject or restore one |
 

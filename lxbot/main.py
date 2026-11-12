@@ -32,13 +32,15 @@ SHUTDOWN_DRAIN_SECONDS = 5.0
 _UNREACHABLE = (TelegramNetworkError, TelegramServerError)
 
 
-def bot_commands(generator: bool) -> list[BotCommand]:
+def bot_commands(generator: bool, schedule: bool = False) -> list[BotCommand]:
     status = "Стан мережі, генератора і батареї" if generator else "Стан мережі і батареї"
-    return [
+    commands = [
         BotCommand(command="start", description="Підписатися на сповіщення"),
         BotCommand(command="status", description=status),
-        BotCommand(command="stop", description="Відписатися"),
     ]
+    if schedule:
+        commands.append(BotCommand(command="schedule", description="Актуальний графік відключень"))
+    return [*commands, BotCommand(command="stop", description="Відписатися")]
 
 
 # After a blackout the house is back before the ISP: keep the monitor running and wait for Telegram.
@@ -171,7 +173,7 @@ async def run(settings: Settings) -> None:
             background.append(asyncio.create_task(NutServer(settings.ups, ups.variables).run(), name="nut"))
         for task in background:
             task.add_done_callback(on_done)
-        await wait_for_telegram(bot, bot_commands(settings.has_generator))
+        await wait_for_telegram(bot, bot_commands(settings.has_generator, settings.schedule is not None))
         await poll_telegram(dispatcher, bot)
     finally:
         for task in background:

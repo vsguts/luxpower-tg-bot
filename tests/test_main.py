@@ -176,6 +176,11 @@ def test_status_command_mentions_the_generator_only_when_there_is_one():
     assert "генератора" not in bot_commands(generator=False)[1].description
 
 
+def test_the_schedule_command_is_in_the_menu_only_with_a_schedule():
+    assert "schedule" not in [c.command for c in bot_commands(generator=True)]
+    assert [c.command for c in bot_commands(generator=True, schedule=True)] == ["start", "status", "schedule", "stop"]
+
+
 def test_device_client_follows_the_device_config():
     dongle = device_client(DongleConfig("127.0.0.1", 8000, "DG00000001", "0000000001"))
     ecoflow = device_client(EcoFlowConfig("access", "secret", "DCABZ0000000001"))
