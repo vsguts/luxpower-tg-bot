@@ -287,13 +287,44 @@ def test_still_ahead_ignores_the_seconds_of_now():
 
 
 def status_line(now, lost_at, schedule=SCHEDULE):
-    return texts.schedule_status_line(schedule, now, KYIV, grid_lost_at=lost_at, match_window=timedelta(minutes=30))
+    return texts.schedule_status_line(schedule, now, KYIV, grid_lost_at=lost_at)
+
+
+NOV13 = date(2026, 11, 13)
+
+
+def nov13(*spans):
+    outages = tuple(Outage(local(2026, 11, 13, *start), local(2026, 11, 13, *end)) for start, end in spans)
+    return Schedule(GROUP, {NOV13: DaySchedule(GROUP, NOV13, outages)})
+
+
+def test_every_scheduled_return_that_did_not_happen_is_listed():
+    # 13 November: lost at 01:41 during 01:00-04:30; no light at 04:30 nor after 10:30-15:30.
+    schedule = nov13(((1, 0), (4, 30)), ((10, 30), (15, 30)), ((20, 30), (24 - 1, 59)))
+    lines = status_line(local(2026, 11, 13, 16, 56), local(2026, 11, 13, 1, 41), schedule).splitlines()
+    assert lines == [
+        "⚠️ За графіком світло мало би бути о 04:30 й о 15:30",
+        "📅 Наступне відключення: сьогодні з 20:30 до 23:59",
+    ]
+
+
+def test_three_missed_returns():
+    schedule = nov13(((0, 0), (1, 0)), ((3, 0), (4, 30)), ((10, 30), (15, 30)))
+    line = status_line(local(2026, 11, 13, 16), local(2026, 11, 13, 0, 30), schedule).splitlines()[0]
+    assert line == "⚠️ За графіком світло мало би бути о 01:00, о 04:30 й о 15:30"
+
+
+def test_a_missed_return_before_the_current_outage():
+    schedule = nov13(((1, 0), (4, 30)), ((10, 30), (15, 30)))
+    assert status_line(local(2026, 11, 13, 12), local(2026, 11, 13, 1, 41), schedule).splitlines() == [
+        "⚠️ За графіком світло мало би бути о 04:30",
+        "📅 За графіком світла немає до 15:30",
+    ]
 
 
 def test_light_overdue_after_a_scheduled_outage():
-    # Lost on schedule at 10:40 (the 11:00 outage, within the window); 15:00 has passed with no light.
     assert status_line(local(2026, 10, 15, 16), local(2026, 10, 15, 10, 40)).splitlines() == [
-        "⚠️ За графіком світло мало бути з 15:00",
+        "⚠️ За графіком світло мало би бути о 15:00",
         "📅 Можливе відключення: сьогодні з 18:00 до 19:00",
     ]
 
@@ -305,10 +336,24 @@ def test_an_outage_off_schedule():
     ]
 
 
+def test_an_outage_off_schedule_that_outlasted_a_scheduled_one():
+    schedule = nov13(((10, 30), (15, 30)),)
+    line = status_line(local(2026, 11, 13, 16, 56), local(2026, 11, 13, 6, 0), schedule).splitlines()[0]
+    assert line == "⚠️ За графіком світло мало би бути о 15:30"
+
+
+def test_the_end_of_a_possible_outage_inside_a_certain_one_is_no_return():
+    possible = Outage(local(2026, 11, 13, 11), local(2026, 11, 13, 12), certain=False)
+    certain = Outage(local(2026, 11, 13, 10), local(2026, 11, 13, 15))
+    schedule = Schedule(GROUP, {NOV13: DaySchedule(GROUP, NOV13, (certain, possible))})
+    line = status_line(local(2026, 11, 13, 16), local(2026, 11, 13, 10), schedule).splitlines()[0]
+    assert line == "⚠️ За графіком світло мало би бути о 15:00"
+
+
 def test_light_overdue_with_nothing_more_planned():
     schedule = Schedule(GROUP, {TODAY: DaySchedule(GROUP, TODAY, (MORNING,))})
     assert status_line(local(2026, 10, 15, 16), local(2026, 10, 15, 11), schedule).splitlines() == [
-        "⚠️ За графіком світло мало бути з 15:00",
+        "⚠️ За графіком світло мало би бути о 15:00",
         "📅 Відключень за графіком більше не заплановано",
     ]
 
@@ -316,7 +361,7 @@ def test_light_overdue_with_nothing_more_planned():
 def test_light_overdue_since_yesterday_names_the_day():
     schedule = Schedule(GROUP, {TODAY: DaySchedule(GROUP, TODAY, (MORNING,)), TOMORROW: DaySchedule(GROUP, TOMORROW)})
     lines = status_line(local(2026, 10, 16, 9), local(2026, 10, 15, 11), schedule).splitlines()
-    assert lines[0] == "⚠️ За графіком світло мало бути з 15:00 15.10"
+    assert lines[0] == "⚠️ За графіком світло мало би бути о 15:00 15.10"
 
 
 def test_no_light_during_the_scheduled_outage_reads_as_before():
@@ -332,7 +377,7 @@ def test_status_text_says_when_the_light_was_due():
     lost = local(2026, 10, 15, 11)
     state = State(grid=Debounced(False, lost), gen=Debounced(False, lost))
     lines = texts.status_text(snapshot, state, local(2026, 10, 15, 16), KYIV, SCHEDULE).splitlines()
-    due = lines.index("⚠️ За графіком світло мало бути з 15:00")
+    due = lines.index("⚠️ За графіком світло мало би бути о 15:00")
     assert lines[due + 1] == "📅 Можливе відключення: сьогодні з 18:00 до 19:00"
 
 
@@ -357,7 +402,7 @@ def test_the_schedule_on_request_lists_every_day_from_today():
         "Завтра, пʼятниця, 16 жовтня",
         "✅ Відключень не заплановано",
         "",
-        "🕐 ДТЕК оновив графік 14.10 22:42",
+        "🕐 Дані ДТЕК станом на 14.10 22:42",
     ]
     assert "<s>з 11:00 до 15:00 (~4 год)</s>" in text
 

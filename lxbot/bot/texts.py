@@ -1,16 +1,15 @@
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta, tzinfo
 from html import escape
 
 from lxbot.device.snapshot import Snapshot
 from lxbot.monitor.detector import Event, EventType, State
 from lxbot.monitor.forecast import FORECAST_STEP, LONG_RUNTIME, BatteryConfig, Forecast, forecast_for
-from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, match_lost, next_outage
+from lxbot.schedule.compare import MatchKind, ScheduleMatch, current_outage, next_outage
 from lxbot.schedule.model import DaySchedule, Outage, Schedule, ScheduleUpdate
 from lxbot.storage.db import Subscriber, SubscriberStatus
 
 SNAPSHOT_STALE_AFTER = timedelta(minutes=2)
-# The schedule config's default; /status gets the configured one.
-DEFAULT_MATCH_WINDOW = timedelta(minutes=30)
 ON_TIME = timedelta(minutes=2)
 
 STATUS_BUTTON = "📊 Статус"
@@ -169,7 +168,7 @@ def schedule_text(
     for day_schedule in days:
         lines += ["", _day_heading(day_schedule.day, today), *_outage_lines(day_schedule, tz, now)]
     if schedule.dtek_updated is not None:
-        lines += ["", f"🕐 ДТЕК оновив графік {schedule.dtek_updated.astimezone(tz):%d.%m %H:%M}"]
+        lines += ["", f"🕐 Дані ДТЕК станом на {schedule.dtek_updated.astimezone(tz):%d.%m %H:%M}"]
     if outdated_since is not None:
         if schedule.dtek_updated is None:
             lines.append("")
@@ -222,35 +221,45 @@ def _still_ahead(schedule: DaySchedule, now: datetime, total: timedelta) -> str:
 
 
 def schedule_status_line(
-    schedule: Schedule,
-    now: datetime,
-    tz: tzinfo,
-    *,
-    grid_lost_at: datetime | None = None,
-    match_window: timedelta = DEFAULT_MATCH_WINDOW,
+    schedule: Schedule, now: datetime, tz: tzinfo, *, grid_lost_at: datetime | None = None
 ) -> str:
     timeline = schedule.timeline()
+    # No light although the schedule says there should have been: every such moment comes first.
+    missed = _missed_light_line(timeline, grid_lost_at, now, tz) if grid_lost_at is not None else None
+    lines = [missed] if missed else []
     current = current_outage(timeline, now)
     if current is not None:
         prefix = "📅 За графіком світла немає до " if current.certain else "📅 Можливе відключення до "
-        return prefix + _range_end(current, tz)
+        return "\n".join([*lines, prefix + _range_end(current, tz)])
     upcoming = next_outage(timeline, now)
     upcoming_line = _upcoming_line(upcoming, now, tz) if upcoming is not None else None
     if grid_lost_at is None:
         return upcoming_line or "📅 Відключень за графіком не заплановано"
-    # No light although the schedule says there should be: that comes first, the next outage second. The loss
-    # is matched as the "Світло зникло" alert matched it.
-    lines = [_overdue_line(match_lost(timeline, grid_lost_at, match_window).interval, now, tz)]
+    if not missed:
+        lines.append("⚠️ Відключення не за графіком")
     lines.append(upcoming_line or "📅 Відключень за графіком більше не заплановано")
     return "\n".join(lines)
 
 
-def _overdue_line(planned: Outage | None, now: datetime, tz: tzinfo) -> str:
-    if planned is None:
-        return "⚠️ Відключення не за графіком"
-    end = planned.end.astimezone(tz)
-    day = "" if end.date() == now.astimezone(tz).date() else f" {end:%d.%m}"
-    return f"⚠️ За графіком світло мало бути з {end:%H:%M}{day}"
+# The scheduled outages that ended since the grid went: at each of them the light should have come back. An
+# end inside another outage (a possible one within a certain one) is no such moment.
+def _missed_light_line(timeline: Sequence[Outage], lost_at: datetime, now: datetime, tz: tzinfo) -> str | None:
+    ends = sorted(
+        {
+            outage.end
+            for outage in timeline
+            if lost_at < outage.end <= now and not any(o.start <= outage.end < o.end for o in timeline)
+        }
+    )
+    if not ends:
+        return None
+    today = now.astimezone(tz).date()
+    moments = []
+    for end in ends:
+        local = end.astimezone(tz)
+        moments.append(f"о {local:%H:%M}" + ("" if local.date() == today else f" {local:%d.%m}"))
+    joined = moments[0] if len(moments) == 1 else ", ".join(moments[:-1]) + " й " + moments[-1]
+    return f"⚠️ За графіком світло мало би бути {joined}"
 
 
 def subscribed_text(generator: bool) -> str:
@@ -348,12 +357,11 @@ def status_text(
     battery: BatteryConfig | None = None,
     *,
     generator: bool = True,
-    match_window: timedelta = DEFAULT_MATCH_WINDOW,
 ) -> str:
     schedule_line = None
     if schedule is not None:
         lost_at = state.grid.since if state is not None and not state.grid.value else None
-        schedule_line = schedule_status_line(schedule, now, tz, grid_lost_at=lost_at, match_window=match_window)
+        schedule_line = schedule_status_line(schedule, now, tz, grid_lost_at=lost_at)
     if snapshot is None or state is None:
         return f"{NO_DATA}\n{schedule_line}" if schedule_line else NO_DATA
     if state.grid.value:
