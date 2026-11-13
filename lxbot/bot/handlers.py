@@ -149,16 +149,8 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     now = datetime.now(UTC)
     schedule = schedules.current(now) if schedules is not None else None
     battery = settings.thresholds.battery
-    window = schedules.config.match_window if schedules is not None else texts.DEFAULT_MATCH_WINDOW
     text = texts.status_text(
-        poller.latest,
-        poller.state,
-        now,
-        settings.tz,
-        schedule,
-        battery,
-        generator=settings.has_generator,
-        match_window=window,
+        poller.latest, poller.state, now, settings.tz, schedule, battery, generator=settings.has_generator
     )
     if ups is not None and ups.test_low and settings.is_admin(message.chat.id):
         text += f"\n{texts.UPS_TEST_STATUS}"

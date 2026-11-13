@@ -164,7 +164,7 @@ async def test_status_shows_the_next_planned_outage(db):
     start = datetime.now(UTC) + timedelta(hours=2)
     day = start.astimezone(KYIV).date()
     schedule = Schedule(GROUP, {day: DaySchedule(GROUP, day, (Outage(start, start + timedelta(hours=4)),))})
-    schedules = SimpleNamespace(current=lambda now: schedule, config=SimpleNamespace(match_window=timedelta(minutes=30)))
+    schedules = SimpleNamespace(current=lambda now: schedule)
     msg = message(42)
     await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
     assert "📅 Наступне відключення:" in msg.answer.await_args.args[0]
@@ -368,7 +368,7 @@ async def test_status_refreshes_the_keyboard(db):
     await db.save_subscriber(42, "Оля", None, SubscriberStatus.APPROVED)
     snapshot = make_snapshot(0, soc=80)
     poller = SimpleNamespace(latest=snapshot, state=initial_state(snapshot))
-    schedules = SimpleNamespace(current=lambda now: None, config=SimpleNamespace(match_window=timedelta(minutes=30)))
+    schedules = SimpleNamespace(current=lambda now: None)
     msg = message(42)
     await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
     keyboard = msg.answer.await_args.kwargs["reply_markup"]
