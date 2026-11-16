@@ -364,10 +364,8 @@ def status_text(
         schedule_line = schedule_status_line(schedule, now, tz, grid_lost_at=lost_at)
     if snapshot is None or state is None:
         return f"{NO_DATA}\n{schedule_line}" if schedule_line else NO_DATA
-    if state.grid.value:
-        grid = f"є · {snapshot.grid_v:.0f} В"
-    else:
-        grid = f"немає вже {format_duration(now - state.grid.since)}"
+    since = format_duration(now - state.grid.since)
+    grid = f"є вже {since} · {snapshot.grid_v:.0f} В" if state.grid.value else f"немає вже {since}"
     # The latest reading disagrees with the debounced state: a change may be under way.
     if snapshot.grid_present_given(state.grid.value) != state.grid.value:
         grid += " (перевіряю)"
