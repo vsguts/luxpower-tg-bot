@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from lxbot.monitor.detector import Debounced, State, initial_state
 from lxbot.nut.server import UpsConfig
-from lxbot.nut.ups import InverterUps
+from lxbot.nut.ups import WAKE_FOR, InverterUps
 from tests.factories import at, make_snapshot
 
 CONFIG = UpsConfig(low_soc=6)
@@ -92,3 +92,44 @@ def test_the_grid_coming_back_clears_a_low_battery():
     assert ups.variables()["ups.status"].startswith("OL")
     poller.state = State(grid=Debounced(False, at(20)), gen=Debounced(False, at(0)))
     assert statuses(poller, ups, [6]) == ["OB"]
+
+
+class Clock:
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def test_a_wake_reports_the_grid_on_for_a_while_during_an_outage():
+    poller = Poller()
+    poller.read(60)
+    clock = Clock(poller.latest.taken_at)
+    ups = InverterUps(poller, CONFIG, None, clock=clock)
+    assert ups.variables()["ups.status"] == "OB"
+    until = ups.wake()
+    assert until == clock.now + WAKE_FOR
+    assert ups.variables()["ups.status"] == "OL"
+    clock.now = until
+    poller.read(59)
+    assert ups.variables()["ups.status"] == "OB"
+
+
+def test_a_wake_never_hides_a_low_battery():
+    poller = Poller()
+    ups = outage_ups(poller)
+    poller.read(60)
+    assert ups.wake() is not None
+    assert statuses(poller, ups, [5, 5]) == ["OL", "OB LB"]
+
+
+def test_a_wake_is_refused_on_a_low_battery_and_ends_the_test():
+    poller = Poller()
+    ups = outage_ups(poller)
+    statuses(poller, ups, [5, 5])
+    assert ups.wake() is None
+    poller.read(60)
+    ups.test_low = True
+    assert ups.wake() is not None
+    assert ups.test_low is False

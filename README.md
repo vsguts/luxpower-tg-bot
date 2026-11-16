@@ -115,7 +115,14 @@ admin while the test is on. How DSM leaves Safe Mode once the UPS is on line aga
 check it on the first test.
 
 During an outage, a NUT client counts a UPS it cannot reach for about 15 s as critical: restarting or
-redeploying the bot while on battery sends the NAS to Safe Mode.
+redeploying the bot while on battery sends the NAS to Safe Mode (a redeploy takes ~20 s).
+
+Wake: in Safe Mode the NAS stays connected and leaves it once the UPS is on line. `/ups_wake` reports `OL`
+instead of a plain `OB` for 10 minutes, so the NAS comes back during the outage; a low battery still shows as
+`OB LB`, and the command is refused when the battery is already low. `/ups_reset` ends it early, `/status`
+shows it to the admin. With DSM waiting for the low battery, the NAS then stays up on battery.
+
+Admins get `/subscribers` and the UPS commands in their own command menu.
 
 ## Run
 

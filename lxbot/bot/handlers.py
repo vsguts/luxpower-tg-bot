@@ -152,8 +152,11 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     text = texts.status_text(
         poller.latest, poller.state, now, settings.tz, schedule, battery, generator=settings.has_generator
     )
-    if ups is not None and ups.test_low and settings.is_admin(message.chat.id):
-        text += f"\n{texts.UPS_TEST_STATUS}"
+    if ups is not None and settings.is_admin(message.chat.id):
+        if ups.test_low:
+            text += f"\n{texts.UPS_TEST_STATUS}"
+        elif ups.waking:
+            text += f"\n{texts.ups_wake_status(ups.online_until, settings.tz)}"
     # Keyboards are kept per chat: answering with the current one brings new buttons to old subscribers.
     await message.answer(text, reply_markup=status_keyboard(schedules is not None))
 
@@ -239,8 +242,24 @@ async def on_ups_reset(message: Message, settings: Settings, ups=None) -> None:
         await message.answer(texts.UPS_NOT_CONFIGURED)
         return
     ups.test_low = False
-    log.warning("UPS test ended: NUT clients see the inverter again")
+    ups.online_until = None
+    log.warning("UPS overrides cleared: NUT clients see the inverter again")
     await message.answer(texts.UPS_TEST_OFF)
+
+
+@router.message(Command("ups_wake"))
+async def on_ups_wake(message: Message, settings: Settings, ups=None) -> None:
+    if not settings.is_admin(message.chat.id):
+        return
+    if ups is None:
+        await message.answer(texts.UPS_NOT_CONFIGURED)
+        return
+    until = ups.wake()
+    if until is None:
+        await message.answer(texts.UPS_WAKE_REFUSED)
+        return
+    log.warning("UPS wake: NUT clients see the grid on until %s", until.isoformat())
+    await message.answer(texts.ups_wake_text(until, settings.tz))
 
 
 # Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.

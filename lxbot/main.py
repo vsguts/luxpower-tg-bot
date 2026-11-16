@@ -1,13 +1,14 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import timedelta
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramNetworkError, TelegramServerError
-from aiogram.types import BotCommand
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
+from aiogram.types import BotCommand, BotCommandScopeChat
 
 from lxbot.bot.handlers import router
 from lxbot.config import DeviceConfig, Settings, settings_from_env
@@ -17,7 +18,7 @@ from lxbot.monitor.detector import EventType, State
 from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
 from lxbot.nut.server import NutServer
-from lxbot.nut.ups import InverterUps
+from lxbot.nut.ups import WAKE_FOR, InverterUps
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
@@ -43,13 +44,35 @@ def bot_commands(generator: bool, schedule: bool = False) -> list[BotCommand]:
     return [*commands, BotCommand(command="stop", description="Відписатися")]
 
 
+def admin_commands(ups: bool) -> list[BotCommand]:
+    commands = [BotCommand(command="subscribers", description="Підписники і запити")]
+    if ups:
+        minutes = WAKE_FOR // timedelta(minutes=1)
+        commands += [
+            BotCommand(command="ups_wake", description=f"Розбудити NAS: «мережа є» на {minutes} хв"),
+            BotCommand(command="ups_test", description="Тест: NAS бачить розряд батареї"),
+            BotCommand(command="ups_reset", description="ІБП для NAS: знову реальні дані"),
+        ]
+    return commands
+
+
 # After a blackout the house is back before the ISP: keep the monitor running and wait for Telegram.
 async def wait_for_telegram(
-    bot: Bot, commands: list[BotCommand], retry_delay: float = TELEGRAM_RETRY_DELAY
+    bot: Bot,
+    commands: list[BotCommand],
+    retry_delay: float = TELEGRAM_RETRY_DELAY,
+    *,
+    chat_menus: Mapping[int, list[BotCommand]] | None = None,
 ) -> None:
     while True:
         try:
             await bot.set_my_commands(commands)
+            for chat_id, menu in (chat_menus or {}).items():
+                # An admin who never opened the bot has no chat yet: that must not keep the bot from starting.
+                try:
+                    await bot.set_my_commands(menu, scope=BotCommandScopeChat(chat_id=chat_id))
+                except TelegramBadRequest as exc:
+                    log.warning("No command menu for chat %s: %s", chat_id, exc)
             return
         except _UNREACHABLE as exc:
             log.warning("Telegram is unreachable, retrying in %.0f s: %s", retry_delay, exc)
@@ -173,7 +196,9 @@ async def run(settings: Settings) -> None:
             background.append(asyncio.create_task(NutServer(settings.ups, ups.variables).run(), name="nut"))
         for task in background:
             task.add_done_callback(on_done)
-        await wait_for_telegram(bot, bot_commands(settings.has_generator, settings.schedule is not None))
+        commands = bot_commands(settings.has_generator, settings.schedule is not None)
+        admin_menu = [*commands, *admin_commands(ups is not None)]
+        await wait_for_telegram(bot, commands, chat_menus=dict.fromkeys(settings.admin_chat_ids, admin_menu))
         await poll_telegram(dispatcher, bot)
     finally:
         for task in background:

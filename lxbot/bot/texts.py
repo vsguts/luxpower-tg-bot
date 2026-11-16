@@ -42,6 +42,19 @@ UPS_TEST_ON = "🧪 Тест увімкнено: NAS бачить «батаре
 UPS_TEST_OFF = "✅ ІБП для NAS знову показує реальні дані інвертора"
 UPS_TEST_CANCELLED = "Скасовано"
 UPS_TEST_STATUS = "🧪 ІБП для NAS: тест «батарея на виході» (/ups_reset)"
+UPS_WAKE_REFUSED = "🪫 Батарея інвертора на виході: NAS довелося б одразу вимкнути знову."
+UPS_COMMANDS = ("ups_test", "ups_wake", "ups_reset")
+
+
+def ups_wake_text(until: datetime, tz: tzinfo) -> str:
+    return (
+        f"🔌 До {until.astimezone(tz):%H:%M} NAS бачить «мережа є» і виходить з безпечного режиму, "
+        "потім знову реальні дані. Скасувати: /ups_reset"
+    )
+
+
+def ups_wake_status(until: datetime, tz: tzinfo) -> str:
+    return f"🔌 ІБП для NAS: «мережа є» до {until.astimezone(tz):%H:%M} (/ups_reset)"
 
 _WEEKDAYS = ("понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя")
 _MONTHS = (
@@ -339,7 +352,7 @@ def unsupported_text(admin: bool, ups: bool = False, schedule: bool = False) -> 
     text = UNSUPPORTED + (", 📅 Графік (/schedule)" if schedule else "") + ", /stop"
     if not admin:
         return text
-    return text + ", /subscribers" + (", /ups_test, /ups_reset" if ups else "")
+    return text + ", /subscribers" + ("".join(f", /{command}" for command in UPS_COMMANDS) if ups else "")
 
 
 def _with_schedule(text: str, event: Event, tz: tzinfo) -> str:

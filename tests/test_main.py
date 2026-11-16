@@ -3,13 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
-from aiogram.exceptions import TelegramNetworkError, TelegramServerError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramServerError
 from aiogram.methods import GetMe
 
 from lxbot.ecoflow.api import EcoFlowConfig
 from lxbot.ecoflow.client import EcoFlowClient
 from lxbot.luxpower.client import DongleClient, DongleConfig
-from lxbot.main import bot_commands, device_client, poll_telegram, stop_background, stop_when_ended, wait_for_telegram
+from lxbot.main import admin_commands, bot_commands, device_client, poll_telegram, stop_background, stop_when_ended, wait_for_telegram
 from lxbot.monitor.detector import Event, EventType
 from lxbot.notify.broadcast import Notifier
 from lxbot.storage.db import SubscriberStatus
@@ -186,3 +186,22 @@ def test_device_client_follows_the_device_config():
     ecoflow = device_client(EcoFlowConfig("access", "secret", "DCABZ0000000001"))
     assert isinstance(dongle, DongleClient)
     assert isinstance(ecoflow, EcoFlowClient)
+
+
+def test_the_admin_menu_offers_the_ups_commands_only_with_nut():
+    assert [c.command for c in admin_commands(ups=False)] == ["subscribers"]
+    assert [c.command for c in admin_commands(ups=True)] == ["subscribers", "ups_wake", "ups_test", "ups_reset"]
+
+
+async def test_admins_get_their_own_menu_and_a_missing_chat_does_not_block_start():
+    calls = []
+
+    async def set_my_commands(commands, scope=None):
+        calls.append((commands, scope.chat_id if scope else None))
+        if scope is not None and scope.chat_id == 2:
+            raise TelegramBadRequest(METHOD, "chat not found")
+
+    admin_menu = [*COMMANDS, *admin_commands(ups=True)]
+    bot = SimpleNamespace(set_my_commands=set_my_commands)
+    await wait_for_telegram(bot, COMMANDS, retry_delay=0, chat_menus={1: admin_menu, 2: admin_menu})
+    assert calls == [(COMMANDS, None), (admin_menu, 1), (admin_menu, 2)]
