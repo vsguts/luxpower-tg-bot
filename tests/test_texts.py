@@ -67,7 +67,7 @@ def test_status_text_on_grid():
     snapshot = make_snapshot(0, soc=76, battery_w=1200, load_w=850, pv_w=0, grid_v=229.4)
     state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
     text = texts.status_text(snapshot, state, at(1), KYIV)
-    assert "⚡ Мережа: є · 229 В" in text
+    assert "⚡ Мережа: є вже менше хвилини · 229 В" in text
     assert "⛽ Генератор: не працює" in text
     assert "🔋 Батарея: 76% · заряджається 1.2 кВт" in text
     assert "🏠 Споживання: 850 Вт" in text
@@ -81,6 +81,13 @@ def test_status_text_off_grid_shows_outage_length():
     text = texts.status_text(snapshot, state, at(540), KYIV)
     assert "немає вже 2 год 15 хв" in text
     assert "розряджається 500 Вт" in text
+
+
+def test_status_text_on_grid_shows_how_long_it_has_been_on():
+    one_day_fifteen_hours = 9360  # polls
+    state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
+    text = texts.status_text(make_snapshot(one_day_fifteen_hours, grid_v=223.0), state, at(one_day_fifteen_hours), KYIV)
+    assert "⚡ Мережа: є вже 1 дн 15 год · 223 В" in text
 
 
 def test_status_text_marks_stale_data():
@@ -123,14 +130,14 @@ def test_status_text_says_when_a_grid_change_is_being_checked():
     absent = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)))
     going = texts.status_text(make_snapshot(1, grid=False), present, at(1), KYIV)
     coming = texts.status_text(make_snapshot(1), absent, at(1), KYIV)
-    assert "⚡ Мережа: є · 0 В (перевіряю)" in going
+    assert "⚡ Мережа: є вже менше хвилини · 0 В (перевіряю)" in going
     assert "⚡ Мережа: немає вже менше хвилини (перевіряю)" in coming
 
 
 def test_status_text_does_not_check_a_sagging_grid_the_detector_holds():
     state = State(grid=Debounced(True, at(0)), gen=Debounced(False, at(0)))
     text = texts.status_text(make_snapshot(1, grid_v=175.0), state, at(1), KYIV)
-    assert "⚡ Мережа: є · 175 В\n" in text
+    assert "⚡ Мережа: є вже менше хвилини · 175 В\n" in text
 
 
 def test_a_failed_tuya_scene_tells_the_admin_why():
