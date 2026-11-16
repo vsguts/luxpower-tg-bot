@@ -14,7 +14,6 @@ from lxbot.luxpower.client import DongleConfig
 from lxbot.luxpower.frame import SERIAL_LEN
 from lxbot.monitor.detector import Thresholds
 from lxbot.monitor.forecast import BatteryConfig
-from lxbot.nut.server import UpsConfig
 from lxbot.schedule.parse import group_key
 from lxbot.schedule.service import DEFAULT_URL, SETTLE_MAX, ScheduleConfig
 from lxbot.tuya.api import DEFAULT_API_URL as TUYA_DEFAULT_API_URL
@@ -57,7 +56,6 @@ class Settings:
     db_path: Path
     schedule: ScheduleConfig | None = None
     tuya: TuyaConfig | None = None
-    ups: UpsConfig | None = None
     has_generator: bool = True
 
     def is_admin(self, chat_id: int) -> bool:
@@ -206,28 +204,6 @@ def tuya_config_from_env(env: Mapping[str, str]) -> TuyaConfig | None:
     return replace(keys, grid_lost_scene=lost, grid_restored_scene=restored, repeat=repeat)
 
 
-def ups_config_from_env(env: Mapping[str, str], battery: BatteryConfig | None = None) -> UpsConfig | None:
-    # Who may reach the port is the network's business; the server only reads and never takes commands.
-    if env.get("NUT_ALLOWED_HOSTS", "").strip():
-        log.warning("NUT_ALLOWED_HOSTS is no longer used: NUT_PORT alone turns the UPS server on")
-    if not env.get("NUT_PORT", "").strip():
-        return None
-    port = _number(env, "NUT_PORT", "", int)
-    if not 1 <= port <= 65535:
-        raise ConfigError("NUT_PORT must be between 1 and 65535")
-    # One above the inverter's cut-off (BATTERY_RESERVE_SOC): below it the inverter is already off.
-    reserve = battery.reserve_soc if battery else 5
-    low_soc = _number(env, "NUT_LOW_SOC", "", int) if env.get("NUT_LOW_SOC", "").strip() else reserve + 1
-    if not reserve < low_soc <= 50:
-        raise ConfigError(f"NUT_LOW_SOC must be above the battery reserve ({reserve}) and at most 50")
-    return UpsConfig(
-        port=port,
-        low_soc=low_soc,
-        user=env.get("NUT_USER", "").strip() or "monuser",
-        password=env.get("NUT_PASSWORD", "").strip() or "secret",
-    )
-
-
 def dongle_config_from_env(env: Mapping[str, str]) -> DongleConfig:
     return DongleConfig(
         host=env["DONGLE_HOST"],
@@ -268,6 +244,5 @@ def settings_from_env(env: Mapping[str, str] = os.environ) -> Settings:
         db_path=Path(env.get("DB_PATH", "data/bot.sqlite3")),
         schedule=schedule_config_from_env(env),
         tuya=tuya_config_from_env(env),
-        ups=ups_config_from_env(env, thresholds.battery),
         has_generator=_flag(env, "HAS_GENERATOR", default=device == LUXPOWER),
     )

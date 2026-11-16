@@ -268,51 +268,6 @@ def test_bad_tuya_scene_repeat(value):
         settings_from_env(env)
 
 
-def test_the_nut_ups_is_off_without_a_port():
-    assert settings_from_env(ENV).ups is None
-    assert settings_from_env(ENV | {"NUT_PORT": " "}).ups is None
-
-
-def test_nut_ups_defaults():
-    ups = settings_from_env(ENV | {"NUT_PORT": "3493"}).ups
-    assert (ups.port, ups.low_soc, ups.user, ups.password) == (3493, 6, "monuser", "secret")
-
-
-def test_nut_ups_overrides():
-    env = ENV | {"NUT_PORT": "13493", "NUT_LOW_SOC": "10", "NUT_USER": "upsmon", "NUT_PASSWORD": "pw"}
-    ups = settings_from_env(env).ups
-    assert (ups.port, ups.low_soc, ups.user, ups.password) == (13493, 10, "upsmon", "pw")
-
-
-def test_the_retired_nut_allowed_hosts_only_warns(caplog):
-    assert settings_from_env(ENV | {"NUT_ALLOWED_HOSTS": "192.168.110.110", "NUT_PORT": "3493"}).ups is not None
-    assert "NUT_ALLOWED_HOSTS" in caplog.text
-    assert settings_from_env(ENV | {"NUT_ALLOWED_HOSTS": "192.168.110.110"}).ups is None
-
-
-@pytest.mark.parametrize(
-    ("extra", "message"),
-    [
-        ({"NUT_PORT": "nut"}, "NUT_PORT"),
-        ({"NUT_PORT": "70000"}, "NUT_PORT"),
-        ({"NUT_PORT": "0"}, "NUT_PORT"),
-        ({"NUT_PORT": "3493", "NUT_LOW_SOC": "5"}, "above the battery reserve"),
-        ({"NUT_PORT": "3493", "NUT_LOW_SOC": "60"}, "NUT_LOW_SOC"),
-        ({"NUT_PORT": "3493", "NUT_LOW_SOC": "low"}, "NUT_LOW_SOC"),
-    ],
-)
-def test_bad_nut_settings(extra, message):
-    with pytest.raises(ConfigError, match=message):
-        settings_from_env(ENV | extra)
-
-
-def test_the_nut_threshold_follows_the_battery_reserve():
-    env = ENV | {"NUT_PORT": "3493", "BATTERY_CAPACITY_WH": "16000", "BATTERY_RESERVE_SOC": "10"}
-    assert settings_from_env(env).ups.low_soc == 11
-    with pytest.raises(ConfigError, match="above the battery reserve"):
-        settings_from_env(env | {"NUT_LOW_SOC": "10"})
-
-
 ECOFLOW_ENV = {
     "BOT_TOKEN": "token",
     "ADMIN_CHAT_ID": "12345",

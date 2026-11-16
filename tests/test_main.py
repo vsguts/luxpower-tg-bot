@@ -188,11 +188,6 @@ def test_device_client_follows_the_device_config():
     assert isinstance(ecoflow, EcoFlowClient)
 
 
-def test_the_admin_menu_offers_the_ups_commands_only_with_nut():
-    assert [c.command for c in admin_commands(ups=False)] == ["subscribers"]
-    assert [c.command for c in admin_commands(ups=True)] == ["subscribers", "ups_wake", "ups_test", "ups_reset"]
-
-
 async def test_admins_get_their_own_menu_and_a_missing_chat_does_not_block_start():
     calls = []
 
@@ -201,7 +196,7 @@ async def test_admins_get_their_own_menu_and_a_missing_chat_does_not_block_start
         if scope is not None and scope.chat_id == 2:
             raise TelegramBadRequest(METHOD, "chat not found")
 
-    admin_menu = [*COMMANDS, *admin_commands(ups=True)]
+    admin_menu = [*COMMANDS, *admin_commands()]
     bot = SimpleNamespace(set_my_commands=set_my_commands)
     await wait_for_telegram(bot, COMMANDS, retry_delay=0, chat_menus={1: admin_menu, 2: admin_menu})
     assert calls == [(COMMANDS, None), (admin_menu, 1), (admin_menu, 2)]

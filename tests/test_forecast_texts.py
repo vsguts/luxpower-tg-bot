@@ -93,7 +93,6 @@ def test_unsupported_text_hints_the_commands():
         "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), /stop"
     )
     assert texts.unsupported_text(admin=True).endswith("/stop, /subscribers")
-    assert texts.unsupported_text(admin=True, ups=True).endswith("/stop, /subscribers, /ups_test, /ups_wake, /ups_reset")
     assert texts.unsupported_text(admin=False, schedule=True) == (
         "🤖 Такі повідомлення я не підтримую.\nДоступно: 📊 Статус (/status), 📅 Графік (/schedule), /stop"
     )

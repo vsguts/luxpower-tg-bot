@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import timedelta
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -17,8 +16,6 @@ from lxbot.luxpower.client import DongleClient, DongleConfig
 from lxbot.monitor.detector import EventType, State
 from lxbot.monitor.poller import EventSink, Poller
 from lxbot.notify.broadcast import Notifier
-from lxbot.nut.server import NutServer
-from lxbot.nut.ups import WAKE_FOR, InverterUps
 from lxbot.schedule.annotate import ScheduleAnnotator
 from lxbot.schedule.service import ScheduleService
 from lxbot.schedule.source import HttpScheduleSource
@@ -44,16 +41,8 @@ def bot_commands(generator: bool, schedule: bool = False) -> list[BotCommand]:
     return [*commands, BotCommand(command="stop", description="Відписатися")]
 
 
-def admin_commands(ups: bool) -> list[BotCommand]:
-    commands = [BotCommand(command="subscribers", description="Підписники і запити")]
-    if ups:
-        minutes = WAKE_FOR // timedelta(minutes=1)
-        commands += [
-            BotCommand(command="ups_wake", description=f"Розбудити NAS: «мережа є» на {minutes} хв"),
-            BotCommand(command="ups_test", description="Тест: NAS бачить розряд батареї"),
-            BotCommand(command="ups_reset", description="ІБП для NAS: знову реальні дані"),
-        ]
-    return commands
+def admin_commands() -> list[BotCommand]:
+    return [BotCommand(command="subscribers", description="Підписники і запити")]
 
 
 # After a blackout the house is back before the ISP: keep the monitor running and wait for Telegram.
@@ -172,11 +161,7 @@ async def run(settings: Settings) -> None:
     if schedules is not None:
         sink = ScheduleAnnotator(sink, schedules, settings.schedule.match_window)
     poller = Poller(client, db, sink, settings.thresholds, settings.poll_interval)
-    ups = None
-    if settings.ups is not None:
-        thresholds = settings.thresholds
-        ups = InverterUps(poller, settings.ups, thresholds.battery, confirm_polls=thresholds.battery_confirm_polls)
-    dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules, ups=ups)
+    dispatcher = Dispatcher(db=db, settings=settings, poller=poller, schedules=schedules)
     dispatcher.include_router(router)
     background: list[asyncio.Task] = []
     on_done = stop_when_ended(dispatcher, asyncio.current_task())
@@ -192,12 +177,10 @@ async def run(settings: Settings) -> None:
         ]
         if schedules is not None:
             background.append(asyncio.create_task(schedules.run(), name="schedule"))
-        if ups is not None:
-            background.append(asyncio.create_task(NutServer(settings.ups, ups.variables).run(), name="nut"))
         for task in background:
             task.add_done_callback(on_done)
         commands = bot_commands(settings.has_generator, settings.schedule is not None)
-        admin_menu = [*commands, *admin_commands(ups is not None)]
+        admin_menu = [*commands, *admin_commands()]
         await wait_for_telegram(bot, commands, chat_menus=dict.fromkeys(settings.admin_chat_ids, admin_menu))
         await poll_telegram(dispatcher, bot)
     finally:
