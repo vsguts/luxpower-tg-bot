@@ -48,10 +48,6 @@ class Decision(CallbackData, prefix="sub"):
     chat_id: int
 
 
-class UpsTest(CallbackData, prefix="ups"):
-    confirm: bool
-
-
 def status_keyboard(schedule: bool = False) -> ReplyKeyboardMarkup:
     buttons = [KeyboardButton(text=texts.STATUS_BUTTON)]
     if schedule:
@@ -142,7 +138,7 @@ async def on_decision(query: CallbackQuery, callback_data: Decision, db: Databas
 
 @router.message(Command("status"))
 @router.message(F.text == texts.STATUS_BUTTON)
-async def on_status(message: Message, db: Database, settings: Settings, poller, schedules=None, ups=None) -> None:
+async def on_status(message: Message, db: Database, settings: Settings, poller, schedules=None) -> None:
     if not await subscriptions.is_approved(db, message.chat.id):
         await message.answer(texts.NOT_SUBSCRIBED)
         return
@@ -152,11 +148,6 @@ async def on_status(message: Message, db: Database, settings: Settings, poller, 
     text = texts.status_text(
         poller.latest, poller.state, now, settings.tz, schedule, battery, generator=settings.has_generator
     )
-    if ups is not None and settings.is_admin(message.chat.id):
-        if ups.test_low:
-            text += f"\n{texts.UPS_TEST_STATUS}"
-        elif ups.waking:
-            text += f"\n{texts.ups_wake_status(ups.online_until, settings.tz)}"
     # Keyboards are kept per chat: answering with the current one brings new buttons to old subscribers.
     await message.answer(text, reply_markup=status_keyboard(schedules is not None))
 
@@ -205,63 +196,6 @@ async def on_remove(query: CallbackQuery, callback_data: Decision, db: Database,
     await query.answer(texts.removed_text(subscriber.name) if subscriber else texts.NOT_FOUND)
 
 
-@router.message(Command("ups_test"))
-async def on_ups_test(message: Message, settings: Settings, ups=None) -> None:
-    if not settings.is_admin(message.chat.id):
-        return
-    if ups is None:
-        await message.answer(texts.UPS_NOT_CONFIGURED)
-        return
-    buttons = [
-        InlineKeyboardButton(text="🔻 Так, тестувати", callback_data=UpsTest(confirm=True).pack()),
-        InlineKeyboardButton(text="Скасувати", callback_data=UpsTest(confirm=False).pack()),
-    ]
-    await message.answer(texts.UPS_TEST_CONFIRM, reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
-
-
-@router.callback_query(UpsTest.filter())
-async def on_ups_test_answer(query: CallbackQuery, callback_data: UpsTest, settings: Settings, ups=None) -> None:
-    if not settings.is_admin(query.from_user.id) or ups is None:
-        await query.answer()
-        return
-    if callback_data.confirm:
-        ups.test_low = True
-        log.warning("UPS test: NUT clients now see a low battery")
-    text = texts.UPS_TEST_ON if callback_data.confirm else texts.UPS_TEST_CANCELLED
-    if isinstance(query.message, Message):
-        with contextlib.suppress(TelegramBadRequest):
-            await query.message.edit_text(text)
-    await query.answer()
-
-
-@router.message(Command("ups_reset"))
-async def on_ups_reset(message: Message, settings: Settings, ups=None) -> None:
-    if not settings.is_admin(message.chat.id):
-        return
-    if ups is None:
-        await message.answer(texts.UPS_NOT_CONFIGURED)
-        return
-    ups.test_low = False
-    ups.online_until = None
-    log.warning("UPS overrides cleared: NUT clients see the inverter again")
-    await message.answer(texts.UPS_TEST_OFF)
-
-
-@router.message(Command("ups_wake"))
-async def on_ups_wake(message: Message, settings: Settings, ups=None) -> None:
-    if not settings.is_admin(message.chat.id):
-        return
-    if ups is None:
-        await message.answer(texts.UPS_NOT_CONFIGURED)
-        return
-    until = ups.wake()
-    if until is None:
-        await message.answer(texts.UPS_WAKE_REFUSED)
-        return
-    log.warning("UPS wake: NUT clients see the grid on until %s", until.isoformat())
-    await message.answer(texts.ups_wake_text(until, settings.tz))
-
-
 # Registered last on purpose: aiogram tries handlers in order, so this only sees what nothing else took.
 # Service messages (a pinned alert, an auto-delete timer) are not something the user said: no reply.
 @router.message(F.content_type.in_(_USER_CONTENT))
@@ -270,7 +204,7 @@ async def on_other(message: Message, db: Database, settings: Settings) -> None:
     if subscriber is not None and subscriber.status is SubscriberStatus.APPROVED:
         admin = settings.is_admin(message.chat.id)
         schedule = settings.schedule is not None
-        text = texts.unsupported_text(admin, settings.ups is not None, schedule)
+        text = texts.unsupported_text(admin, schedule=schedule)
         await message.answer(text, reply_markup=status_keyboard(schedule))
     elif subscriber is not None and subscriber.status is SubscriberStatus.PENDING:
         await message.answer(texts.REQUEST_PENDING)

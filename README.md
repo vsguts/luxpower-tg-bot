@@ -80,49 +80,12 @@ repeats (not the first run). Repeats are not journaled; two failing in a row tel
 outage. Each run is one API call: a few cents a year at Tuya's paid rates. Keep the project's IoT Core trial
 extended (Cloud > Cloud Services), or the API stops answering.
 
-## NAS on the inverter's UPS (NUT)
+## NAS UPS
 
-The bot can present the inverter as a network UPS (Network UPS Tools, port 3493), so a Synology NAS on a
-separate battery (here an EcoFlow on the inverter's output) goes to Safe Mode once the inverter is about to
-shut down, and the internet on that battery lasts longer. Any NUT client (`upsc`, Home Assistant, Linux
-`upsmon`) can read it too.
+The bot no longer serves the inverter as a UPS (NUT) for the NAS. The NAS runs from an EcoFlow station, so the
+station is its UPS: see [ecoflow-nut](https://github.com/vsguts/ecoflow-nut).
 
-- `ups.status` is `OL` (grid or generator; `OL CHRG` while charging), `OB` on the battery alone, and `OB LB`
-  once the charge has been at or below `NUT_LOW_SOC` for two readings in a row (default: one above
-  `BATTERY_RESERVE_SOC`, the inverter's cut-off, so 6 %). One garbled reading does not count, and once
-  reported the low battery holds until the charge is 2 points higher or the grid is back.
-- When the dongle goes silent for 2 minutes on battery (the inverter shuts down and takes it along, also
-  when that happens while a grid or generator loss is still being confirmed): `OB LB` if the last charge
-  was within 2 points of the threshold, or once the charge estimated from the last discharge power reaches it.
-  A Wi-Fi gap on a healthy battery keeps the last reading.
-- Also `battery.charge`, `battery.charge.low`, `battery.runtime` (the forecast by power), `input.voltage`,
-  `ups.realpower`, maker and model.
-
-Setup:
-
-1. `.env`: `NUT_PORT=3493` turns the server on (empty: off). It only reads: anyone who can reach the port
-   sees the inverter's state, nobody can change anything; who may reach it is up to the network's rules.
-   `compose.yaml` publishes 3493, so a different port needs both changed. DSM logs in as `monuser` / `secret`
-   to a UPS named `ups` and cannot be told otherwise; `NUT_USER` / `NUT_PASSWORD` exist for other clients.
-2. DSM > Control Panel > Hardware & Power > UPS: enable UPS support, type "Synology UPS server", server IP
-   = the bot's host, "Time before Synology NAS enters Standby Mode": "Same as server" (that is, on the low
-   battery this server reports). Device Information should show LuxPower SNA6000 WPV with its charge.
-3. Check from any machine: `upsc ups@<bot host>`.
-
-Admin test: `/ups_test` (with a confirmation) makes the UPS report `OB LB` whatever the inverter does, so the
-NAS really goes to Standby (Safe) Mode; `/ups_reset` (or a bot restart) returns the real readings. `/status` reminds the
-admin while the test is on. How DSM leaves Safe Mode once the UPS is on line again is DSM's own behaviour;
-check it on the first test.
-
-During an outage, a NUT client counts a UPS it cannot reach for about 15 s as critical: restarting or
-redeploying the bot while on battery sends the NAS to Safe Mode (a redeploy takes ~20 s).
-
-Wake: in Safe Mode the NAS stays connected and leaves it once the UPS is on line. `/ups_wake` reports `OL`
-instead of a plain `OB` for 10 minutes, so the NAS comes back during the outage; a low battery still shows as
-`OB LB`, and the command is refused when the battery is already low. `/ups_reset` ends it early, `/status`
-shows it to the admin. With DSM waiting for the low battery, the NAS then stays up on battery.
-
-Admins get `/subscribers` and the UPS commands in their own command menu.
+Admins get `/subscribers` in their own command menu.
 
 ## Run
 
