@@ -24,11 +24,14 @@ from lxbot.bot.handlers import (
     on_ups_reset,
     on_ups_test,
     on_ups_test_answer,
+    on_ups_wake,
     router,
     status_keyboard,
 )
 from lxbot.monitor.detector import Debounced, State, initial_state
 from lxbot.monitor.forecast import BatteryConfig
+from lxbot.nut.server import UpsConfig
+from lxbot.nut.ups import InverterUps
 from lxbot.schedule.model import DaySchedule, Outage, Schedule
 from lxbot.storage.db import SubscriberStatus
 from tests.conftest import make_settings
@@ -152,7 +155,7 @@ def test_router_registers_every_handler():
     assert message_callbacks[-1] is on_other
     for callback in (on_decision, on_remove, on_ups_test_answer):
         assert callback in query_callbacks
-    for callback in (on_ups_test, on_ups_reset):
+    for callback in (on_ups_test, on_ups_wake, on_ups_reset):
         assert callback in message_callbacks
 
 
@@ -266,6 +269,7 @@ async def test_ups_commands_are_admin_only():
     ups = SimpleNamespace(test_low=True)
     msg = message(42)
     await on_ups_test(msg, settings=make_settings(ADMIN), ups=ups)
+    await on_ups_wake(msg, settings=make_settings(ADMIN), ups=ups)
     await on_ups_reset(msg, settings=make_settings(ADMIN), ups=ups)
     msg.answer.assert_not_awaited()
     query, data = ups_query(42, confirm=False)
@@ -373,3 +377,33 @@ async def test_status_refreshes_the_keyboard(db):
     await on_status(msg, db=db, settings=make_settings(ADMIN), poller=poller, schedules=schedules)
     keyboard = msg.answer.await_args.kwargs["reply_markup"]
     assert [b.text for row in keyboard.keyboard for b in row] == [texts.STATUS_BUTTON, texts.SCHEDULE_BUTTON]
+
+
+def outage_ups(soc=60):
+    snapshot = make_snapshot(0, grid=False, soc=soc, battery_w=-500)
+    state = State(grid=Debounced(False, at(0)), gen=Debounced(False, at(0)))
+    # The handlers read the real clock; so does this UPS, with a reading that is always fresh.
+    poller = SimpleNamespace(latest=replace(snapshot, taken_at=datetime.now(UTC)), state=state)
+    return InverterUps(poller, UpsConfig(low_soc=6), None)
+
+
+async def test_ups_wake_shows_the_nas_the_grid_until_reset(db):
+    ups, msg = outage_ups(), message(ADMIN)
+    await on_ups_wake(msg, settings=make_settings(ADMIN), ups=ups)
+    assert msg.answer.await_args.args == (texts.ups_wake_text(ups.online_until, KYIV),)
+    assert ups.variables()["ups.status"] == "OL"
+    await db.save_subscriber(ADMIN, "Адмін", None, SubscriberStatus.APPROVED)
+    status = message(ADMIN)
+    await on_status(status, db=db, settings=make_settings(ADMIN), poller=ups._readings, ups=ups)
+    assert texts.ups_wake_status(ups.online_until, KYIV) in status.answer.await_args.args[0]
+    await on_ups_reset(message(ADMIN), settings=make_settings(ADMIN), ups=ups)
+    assert ups.variables()["ups.status"] == "OB"
+
+
+async def test_ups_wake_is_refused_on_a_low_battery():
+    ups, msg = outage_ups(soc=3), message(ADMIN)
+    ups.variables()
+    ups._readings.latest = replace(ups._readings.latest, taken_at=datetime.now(UTC) + timedelta(seconds=15))
+    await on_ups_wake(msg, settings=make_settings(ADMIN), ups=ups)
+    assert msg.answer.await_args.args == (texts.UPS_WAKE_REFUSED,)
+    assert ups.online_until is None

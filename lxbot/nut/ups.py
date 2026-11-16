@@ -11,6 +11,9 @@ from lxbot.nut.status import READING_LOST_AFTER, ups_variables
 # Once reported, a low battery holds until the charge is this far above the threshold: a 6 % / 7 % jitter
 # would otherwise clear it before the NAS acts on it.
 LOW_RELEASE_MARGIN = 2
+# DSM leaves Safe Mode only when the UPS is on line again. Long enough for it to see that and come back, short
+# enough that a forgotten wake does not hide an outage for long; DSM set to "until low battery" stays up after.
+WAKE_FOR = timedelta(minutes=10)
 
 
 class Readings(Protocol):
@@ -23,8 +26,8 @@ def _utc_now() -> datetime:
 
 
 class InverterUps:
-    """The inverter as NUT clients see it, with the admin's low-battery test on top (kept until /ups_reset or a
-    restart)."""
+    """The inverter as NUT clients see it, with the admin's overrides on top: the low-battery test (kept until
+    /ups_reset or a restart) and the wake (grid reported on for WAKE_FOR)."""
 
     def __init__(
         self,
@@ -45,11 +48,27 @@ class InverterUps:
         self._low_streak = 0
         self._low = False
         self.test_low = False
+        self.online_until: datetime | None = None
+
+    @property
+    def waking(self) -> bool:
+        return self.online_until is not None and self._clock() < self.online_until
+
+    def wake(self) -> datetime | None:
+        """Reports the grid as on for WAKE_FOR, so a NAS sent to Safe Mode during an outage comes back. Refused (None)
+        on a low battery: the NAS would have to go down again at once."""
+        self.test_low = False
+        self.online_until = None
+        variables = self.variables()
+        if variables is None or "LB" in variables["ups.status"]:
+            return None
+        self.online_until = self._clock() + WAKE_FOR
+        return self.online_until
 
     def variables(self) -> dict[str, str] | None:
         readings, now = self._readings, self._clock()
         self._track(readings.latest, readings.state)
-        return ups_variables(
+        variables = ups_variables(
             readings.latest,
             readings.state,
             now,
@@ -59,6 +78,10 @@ class InverterUps:
             reading_overdue=now - self._started > READING_LOST_AFTER,
             test_low=self.test_low,
         )
+        # Only a plain "on battery" is masked: a low battery still reaches the NAS.
+        if variables is not None and variables["ups.status"] == "OB" and self.waking:
+            variables["ups.status"] = "OL"
+        return variables
 
     # One garbled reading (a 0 between two 60s has been seen) must not take the NAS down: the charge has to
     # stay low for several readings, as for the battery alerts.
