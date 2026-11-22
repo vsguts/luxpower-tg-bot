@@ -11,6 +11,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
+from aiohttp import ClientConnectorError
 
 from lxbot.bot.texts import event_text
 from lxbot.monitor.detector import Audience, Event
@@ -19,10 +20,21 @@ from lxbot.storage.db import Database, SubscriberStatus
 log = logging.getLogger(__name__)
 
 _RETRY_MAX = 60.0
+# A send that timed out or met a server error may have reached Telegram all the same: on 2026-11-20 it took every
+# one of 19 retries during an outage and delivered them all at once. One resend, once Telegram answers again, still
+# covers a request it really lost.
+MAX_UNCERTAIN_RESENDS = 1
 
 
 class Sender(Protocol):
     async def send_message(self, chat_id: int, text: str, **kwargs) -> object: ...
+
+    async def get_me(self) -> object: ...
+
+
+def _never_left(exc: TelegramNetworkError | TelegramServerError) -> bool:
+    # aiogram chains aiohttp's error: a connection that never opened carried no request.
+    return isinstance(exc.__cause__, ClientConnectorError)
 
 
 class Notifier:
@@ -72,8 +84,9 @@ class Notifier:
         return [s.chat_id for s in await self._db.subscribers(SubscriberStatus.APPROVED)]
 
     async def _deliver(self, chat_id: int, text: str, silent: bool = False) -> None:
-        # Keep retrying network failures: the text carries the event time, so late is still useful.
+        # The text carries the event time, so a late alert is still useful: keep trying what surely did not arrive.
         delay = self._retry_base
+        resends = 0
         while True:
             try:
                 await self._sender.send_message(chat_id=chat_id, text=text, disable_notification=silent)
@@ -88,6 +101,27 @@ class Notifier:
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(exc.retry_after)
             except (TelegramNetworkError, TelegramServerError) as exc:
-                log.warning("sending to %s failed, retrying in %.0f s: %s", chat_id, delay, exc)
+                if _never_left(exc):
+                    log.warning("sending to %s failed, retrying in %.0f s: %s", chat_id, delay, exc)
+                    await asyncio.sleep(delay)
+                    delay = self._next_delay(delay)
+                    continue
+                if resends >= MAX_UNCERTAIN_RESENDS:
+                    log.error("not resending to %s again: Telegram may have the message already (%s)", chat_id, exc)
+                    return
+                resends += 1
+                log.warning("sending to %s may have failed (%s); resending once Telegram answers", chat_id, exc)
+                await self._wait_for_telegram()
+
+    async def _wait_for_telegram(self) -> None:
+        delay = self._retry_base
+        while True:
+            try:
+                await self._sender.get_me()
+                return
+            except (TelegramNetworkError, TelegramServerError):
                 await asyncio.sleep(delay)
-                delay = min(max(delay * 2, self._retry_base), _RETRY_MAX)
+                delay = self._next_delay(delay)
+
+    def _next_delay(self, delay: float) -> float:
+        return min(max(delay * 2, self._retry_base), _RETRY_MAX)
