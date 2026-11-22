@@ -1,9 +1,11 @@
 import asyncio
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
-from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError, TelegramServerError
 from aiogram.methods import SendMessage
+from aiohttp import ClientConnectorError
 
 from lxbot.monitor.detector import Event, EventType
 from lxbot.notify.broadcast import Notifier
@@ -14,15 +16,38 @@ ADMIN = 1
 METHOD = SendMessage(chat_id=0, text="x")
 
 
+def timed_out() -> TelegramNetworkError:
+    # As aiogram raises it: Telegram may have taken the request and only the answer got lost.
+    exc = TelegramNetworkError(METHOD, "Request timeout error")
+    exc.__cause__ = TimeoutError()
+    return exc
+
+
+def not_connected() -> TelegramNetworkError:
+    key = SimpleNamespace(host="api.telegram.org", port=443, ssl=True)
+    exc = TelegramNetworkError(METHOD, "ClientConnectorError: Cannot connect to host")
+    exc.__cause__ = ClientConnectorError(key, OSError(111, "Connection refused"))
+    return exc
+
+
 class FakeSender:
-    def __init__(self, failures: dict[int, list[Exception]] | None = None):
+    def __init__(self, failures: dict[int, list[Exception]] | None = None, get_me_failures: int = 0):
         self.sent: list[tuple[int, str]] = []
         self.failures = failures or {}
+        self.calls: list[str] = []
+        self.get_me_failures = get_me_failures
 
     async def send_message(self, chat_id: int, text: str, **kwargs):
+        self.calls.append(f"send {chat_id}")
         if self.failures.get(chat_id):
             raise self.failures[chat_id].pop(0)
         self.sent.append((chat_id, text))
+
+    async def get_me(self):
+        self.calls.append("get_me")
+        if self.get_me_failures:
+            self.get_me_failures -= 1
+            raise TelegramServerError(METHOD, "Bad Gateway")
 
 
 @pytest.fixture
@@ -63,11 +88,25 @@ async def test_journal_only_events_are_not_sent(db, subscribers):
     assert [e.type for e in await db.recent_events()] == ["gen_started"]
 
 
-async def test_network_errors_are_retried(db, subscribers):
-    errors = [TelegramNetworkError(METHOD, "timeout"), TelegramNetworkError(METHOD, "timeout")]
-    sender = FakeSender({10: errors})
+async def test_a_message_that_never_left_is_retried_until_sent(db, subscribers):
+    sender = FakeSender({10: [not_connected(), not_connected(), not_connected()]})
     await deliver(make_notifier(sender, db), [Event(EventType.BATTERY_LOW, at(0), 30)])
     assert [chat_id for chat_id, _ in sender.sent] == [10, 11]
+    assert "get_me" not in sender.calls
+
+
+# 2026-11-20: Telegram took every timed-out send and delivered all 19 copies once it recovered.
+async def test_a_message_telegram_may_have_is_resent_once_after_telegram_answers(db, subscribers):
+    sender = FakeSender({10: [timed_out(), timed_out(), timed_out()]}, get_me_failures=2)
+    await deliver(make_notifier(sender, db), [Event(EventType.GRID_RESTORED, at(1), 81, at(1) - at(0))])
+    assert sender.calls == ["send 10", "get_me", "get_me", "get_me", "send 10", "send 11"]
+    assert [chat_id for chat_id, _ in sender.sent] == [11]
+
+
+async def test_a_server_error_counts_as_maybe_delivered(db, subscribers):
+    sender = FakeSender({10: [TelegramServerError(METHOD, "Bad Gateway")]})
+    await deliver(make_notifier(sender, db), [Event(EventType.BATTERY_LOW, at(0), 30)])
+    assert sender.calls == ["send 10", "get_me", "send 10", "send 11"]
 
 
 async def test_blocked_user_becomes_inactive(db, subscribers):
